@@ -1,0 +1,24 @@
+# ==>> LOG <<==
+prefix: ""
+directory: "/Users/kyden/git-space/semantic_matcher/logs"
+filename: "semantic_matcher"
+level: "debug"
+format: "console"
+time_layout: "2006-01-02 15:04:05.000"
+
+# Basic settings
+disable_caller: false
+disable_stacktrace: false
+disable_split_error: true
+console_output: true
+
+# File rotation
+max_size: 100
+max_backups: 5
+compress: false
+
+# Sampling (reduces log volume in high-traffic scenarios)
+enable_sampling: false
+sample_initial: 100
+sample_thereafter: 1000
+
