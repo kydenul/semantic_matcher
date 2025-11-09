@@ -27,4 +27,7 @@ var (
 
 	// ErrUnsupportedLanguage indicates the language is not supported
 	ErrUnsupportedLanguage = errors.New("unsupported language")
+
+	// ErrNoVectorFiles indicates no vector files were specified in configuration
+	ErrNoVectorFiles = errors.New("no vector files specified")
 )

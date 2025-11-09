@@ -1,24 +1,26 @@
 package semanticmatcher
 
 import (
-	"encoding/json"
 	"os"
 )
 
 const (
-	DefaultVectorFilePath   = ""
-	DefaultMaxSequenceLen   = 512
-	DefaultChineseStopWords = ""
-	DefaultEnglishStopWords = ""
-	DefaultEnableStats      = true
-	DefaultMemoryLimit      = 10 * 1024 * 1024 * 1024 // 1GB default
+	DefaultMaxSequenceLen = 512
+	DefaultEnableStats    = true
+	DefaultMemoryLimit    = 10 * 1024 * 1024 * 1024 // 10GB default
 )
 
 var DefaultSupportedLanguages = []string{"zh", "en"}
 
 // Config holds configuration parameters for the semantic matcher
 type Config struct {
-	VectorFilePath     string   `json:"vector_file_path"`
+	// VectorFilePaths specifies one or more vector embedding files to load.
+	// Supports both single-language and cross-lingual scenarios:
+	// 	- Single file: []string{"vector/cc.zh.300.vec"}
+	// 	- Multiple aligned files: []string{"vector/wiki.zh.align.vec", "vector/wiki.en.align.vec"}
+	// All files must have the same vector dimension. If duplicate words exist across files,
+	// later files will override earlier ones.
+	VectorFilePaths    []string `json:"vector_file_paths"`
 	MaxSequenceLen     int      `json:"max_sequence_length"`
 	ChineseStopWords   string   `json:"chinese_stop_words_path"`
 	EnglishStopWords   string   `json:"english_stop_words_path"`
@@ -30,39 +32,14 @@ type Config struct {
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() *Config {
 	return &Config{
-		VectorFilePath:     DefaultVectorFilePath,
+		VectorFilePaths:    []string{},
 		MaxSequenceLen:     DefaultMaxSequenceLen,
-		ChineseStopWords:   DefaultChineseStopWords,
-		EnglishStopWords:   DefaultEnglishStopWords,
+		ChineseStopWords:   "",
+		EnglishStopWords:   "",
 		EnableStats:        DefaultEnableStats,
 		MemoryLimit:        DefaultMemoryLimit,
 		SupportedLanguages: DefaultSupportedLanguages,
 	}
-}
-
-// LoadFromFile loads configuration from a JSON file
-func LoadFromFile(path string) (*Config, error) {
-	data, err := os.ReadFile(path) //nolint:gosec
-	if err != nil {
-		return nil, err
-	}
-
-	config := DefaultConfig()
-	if err := json.Unmarshal(data, config); err != nil {
-		return nil, err
-	}
-
-	return config, nil
-}
-
-// SaveToFile saves configuration to a JSON file
-func SaveToFile(config *Config, path string) error {
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(path, data, 0o644) //nolint:gosec
 }
 
 // Validate checks if the configuration is valid
@@ -71,8 +48,21 @@ func Validate(config *Config) error {
 		return ErrInvalidConfiguration
 	}
 
-	if config.VectorFilePath == "" {
-		return ErrInvalidConfiguration
+	if len(config.VectorFilePaths) == 0 {
+		return ErrNoVectorFiles
+	}
+
+	// Verify all vector files exist and are readable
+	for _, path := range config.VectorFilePaths {
+		if path == "" {
+			return ErrInvalidConfiguration
+		}
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				return ErrInvalidConfiguration
+			}
+			return err
+		}
 	}
 
 	if config.MaxSequenceLen <= 0 {

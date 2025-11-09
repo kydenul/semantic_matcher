@@ -203,3 +203,275 @@ func TestAverageLatencyCalculation(t *testing.T) {
 		t.Error("Expected non-zero average latency")
 	}
 }
+
+// TestNewSemanticMatcherFromConfigSingleFile tests initialization with a single vector file
+func TestNewSemanticMatcherFromConfigSingleFile(t *testing.T) {
+	logger := &mockLogger{messages: make([]string, 0)}
+
+	config := &Config{
+		VectorFilePaths:    []string{"vector/wiki.zh.align.vec"},
+		MaxSequenceLen:     512,
+		EnableStats:        true,
+		MemoryLimit:        10 * 1024 * 1024 * 1024, // 10GB
+		SupportedLanguages: []string{"zh"},
+	}
+
+	matcher, err := NewSemanticMatcherFromConfig(config, logger)
+	if err != nil {
+		t.Fatalf("Failed to create SemanticMatcher: %v", err)
+	}
+
+	if matcher == nil {
+		t.Fatal("Expected non-nil matcher")
+	}
+
+	// Verify logging occurred
+	hasLoadingLog := false
+	for _, msg := range logger.messages {
+		if strings.Contains(msg, "Loading vector model") && strings.Contains(msg, "file_count: 1") {
+			hasLoadingLog = true
+			break
+		}
+	}
+	if !hasLoadingLog {
+		t.Error("Expected loading log with file_count: 1")
+	}
+
+	// Test that matcher works with Chinese text
+	text1 := "这是测试"
+	text2 := "中文词汇"
+	similarity := matcher.ComputeSimilarity(text1, text2)
+
+	if similarity < 0 || similarity > 1 {
+		t.Errorf("Expected similarity in [0, 1], got %f", similarity)
+	}
+}
+
+// TestNewSemanticMatcherFromConfigMultipleFiles tests initialization with multiple vector files
+func TestNewSemanticMatcherFromConfigMultipleFiles(t *testing.T) {
+	logger := &mockLogger{messages: make([]string, 0)}
+
+	config := &Config{
+		VectorFilePaths:    []string{"vector/wiki.zh.align.vec", "vector/wiki.en.align.vec"},
+		MaxSequenceLen:     512,
+		EnableStats:        true,
+		MemoryLimit:        10 * 1024 * 1024 * 1024, // 10GB
+		SupportedLanguages: []string{"zh", "en"},
+	}
+
+	matcher, err := NewSemanticMatcherFromConfig(config, logger)
+	if err != nil {
+		t.Fatalf("Failed to create SemanticMatcher: %v", err)
+	}
+
+	if matcher == nil {
+		t.Fatal("Expected non-nil matcher")
+	}
+
+	// Verify logging occurred with correct file count
+	hasLoadingLog := false
+	for _, msg := range logger.messages {
+		if strings.Contains(msg, "Loading vector model") && strings.Contains(msg, "file_count: 2") {
+			hasLoadingLog = true
+			break
+		}
+	}
+	if !hasLoadingLog {
+		t.Error("Expected loading log with file_count: 2")
+	}
+
+	// Verify model loaded successfully log
+	hasSuccessLog := false
+	for _, msg := range logger.messages {
+		if strings.Contains(msg, "Vector model loaded successfully") {
+			hasSuccessLog = true
+			break
+		}
+	}
+	if !hasSuccessLog {
+		t.Error("Expected success log")
+	}
+
+	// Test that matcher works with both Chinese and English text
+	chineseText := "这是测试"
+	englishText := "test english"
+	similarity := matcher.ComputeSimilarity(chineseText, englishText)
+
+	if similarity < 0 || similarity > 1 {
+		t.Errorf("Expected similarity in [0, 1], got %f", similarity)
+	}
+}
+
+// TestNewSemanticMatcherFromConfigMemoryLimit tests memory limit checking
+func TestNewSemanticMatcherFromConfigMemoryLimit(t *testing.T) {
+	logger := &mockLogger{messages: make([]string, 0)}
+
+	config := &Config{
+		VectorFilePaths:    []string{"vector/wiki.zh.align.vec"},
+		MaxSequenceLen:     512,
+		EnableStats:        true,
+		MemoryLimit:        1, // Very low limit to trigger error
+		SupportedLanguages: []string{"zh"},
+	}
+
+	matcher, err := NewSemanticMatcherFromConfig(config, logger)
+	if err != ErrMemoryLimitExceeded {
+		t.Errorf("Expected ErrMemoryLimitExceeded, got %v", err)
+	}
+
+	if matcher != nil {
+		t.Error("Expected nil matcher when memory limit exceeded")
+	}
+
+	// Verify warning was logged
+	hasWarning := false
+	for _, msg := range logger.messages {
+		if strings.Contains(msg, "WARN") && strings.Contains(msg, "Memory usage exceeds limit") {
+			hasWarning = true
+			break
+		}
+	}
+	if !hasWarning {
+		t.Error("Expected memory limit warning")
+	}
+}
+
+// TestNewSemanticMatcherFromConfigInvalidConfig tests configuration validation
+func TestNewSemanticMatcherFromConfigInvalidConfig(t *testing.T) {
+	logger := &mockLogger{messages: make([]string, 0)}
+
+	tests := []struct {
+		name   string
+		config *Config
+		errMsg string
+	}{
+		{
+			name:   "nil config",
+			config: nil,
+			errMsg: "invalid configuration",
+		},
+		{
+			name: "empty vector files",
+			config: &Config{
+				VectorFilePaths:    []string{},
+				MaxSequenceLen:     512,
+				SupportedLanguages: []string{"zh"},
+			},
+			errMsg: "no vector files",
+		},
+		{
+			name: "invalid max sequence length",
+			config: &Config{
+				VectorFilePaths:    []string{"testdata/test_zh.vec"},
+				MaxSequenceLen:     0,
+				SupportedLanguages: []string{"zh"},
+			},
+			errMsg: "invalid configuration",
+		},
+		{
+			name: "empty supported languages",
+			config: &Config{
+				VectorFilePaths:    []string{"testdata/test_zh.vec"},
+				MaxSequenceLen:     512,
+				SupportedLanguages: []string{},
+			},
+			errMsg: "invalid configuration",
+		},
+		{
+			name: "unsupported language",
+			config: &Config{
+				VectorFilePaths:    []string{"testdata/test_zh.vec"},
+				MaxSequenceLen:     512,
+				SupportedLanguages: []string{"fr"},
+			},
+			errMsg: "unsupported language",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matcher, err := NewSemanticMatcherFromConfig(tt.config, logger)
+			if err == nil {
+				t.Errorf("Expected error containing '%s', got nil", tt.errMsg)
+			}
+			if matcher != nil {
+				t.Error("Expected nil matcher on error")
+			}
+		})
+	}
+}
+
+// TestNewSemanticMatcherFromConfigWithStopWords tests initialization with stop words
+func TestNewSemanticMatcherFromConfigWithStopWords(t *testing.T) {
+	logger := &mockLogger{messages: make([]string, 0)}
+
+	config := &Config{
+		VectorFilePaths:    []string{"vector/wiki.zh.align.vec"},
+		MaxSequenceLen:     512,
+		ChineseStopWords:   "testdata/chinese_stopwords.txt",
+		EnglishStopWords:   "testdata/english_stopwords.txt",
+		EnableStats:        true,
+		MemoryLimit:        10 * 1024 * 1024 * 1024, // 10GB
+		SupportedLanguages: []string{"zh"},
+	}
+
+	// This should not fail even if stop word files don't exist
+	// It should fall back to default processor
+	matcher, err := NewSemanticMatcherFromConfig(config, logger)
+	if err != nil {
+		t.Fatalf("Failed to create SemanticMatcher: %v", err)
+	}
+
+	if matcher == nil {
+		t.Fatal("Expected non-nil matcher")
+	}
+}
+
+// TestNewSemanticMatcherFromConfigLogsMemoryUsage tests that memory usage is logged
+func TestNewSemanticMatcherFromConfigLogsMemoryUsage(t *testing.T) {
+	logger := &mockLogger{messages: make([]string, 0)}
+
+	config := &Config{
+		VectorFilePaths:    []string{"vector/wiki.zh.align.vec"},
+		MaxSequenceLen:     512,
+		EnableStats:        true,
+		MemoryLimit:        10 * 1024 * 1024 * 1024, // 10GB
+		SupportedLanguages: []string{"zh"},
+	}
+
+	matcher, err := NewSemanticMatcherFromConfig(config, logger)
+	if err != nil {
+		t.Fatalf("Failed to create SemanticMatcher: %v", err)
+	}
+
+	if matcher == nil {
+		t.Fatal("Expected non-nil matcher")
+	}
+
+	// Verify memory usage was logged
+	hasMemoryLog := false
+	for _, msg := range logger.messages {
+		if strings.Contains(msg, "memory_mb") || strings.Contains(msg, "Memory usage within limit") {
+			hasMemoryLog = true
+			break
+		}
+	}
+	if !hasMemoryLog {
+		t.Error("Expected memory usage to be logged")
+	}
+
+	// Verify initialization success log includes all details
+	hasDetailedLog := false
+	for _, msg := range logger.messages {
+		if strings.Contains(msg, "SemanticMatcher initialized successfully") &&
+			strings.Contains(msg, "file_count") &&
+			strings.Contains(msg, "vocabulary_size") &&
+			strings.Contains(msg, "memory_usage_mb") {
+			hasDetailedLog = true
+			break
+		}
+	}
+	if !hasDetailedLog {
+		t.Error("Expected detailed initialization log")
+	}
+}

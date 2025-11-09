@@ -211,46 +211,6 @@ func TestEmbeddingLoader_LoadFromFile_FileNotFound(t *testing.T) {
 	}
 }
 
-func TestEmbeddingLoader_LoadFromFile_ValidFile(t *testing.T) {
-	logger := &mockLogger{}
-	loader := NewEmbeddingLoader(logger)
-
-	// Create temporary file
-	tmpFile, err := os.CreateTemp("", "test_vectors_*.vec")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	// Write test content
-	vecContent := `2 3
-hello 0.1 0.2 0.3
-world 0.4 0.5 0.6`
-
-	if _, err := tmpFile.WriteString(vecContent); err != nil {
-		t.Fatalf("Failed to write to temp file: %v", err)
-	}
-	tmpFile.Close()
-
-	// Load from file
-	model, err := loader.LoadFromFile(tmpFile.Name())
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-
-	if model == nil {
-		t.Fatal("Expected non-nil VectorModel")
-	}
-
-	if model.Dimension() != 3 {
-		t.Errorf("Expected dimension 3, got %d", model.Dimension())
-	}
-
-	if model.VocabularySize() != 2 {
-		t.Errorf("Expected vocabulary size 2, got %d", model.VocabularySize())
-	}
-}
-
 func TestEmbeddingLoader_LoadFromReader_LargeFile(t *testing.T) {
 	logger := &mockLogger{}
 	loader := NewEmbeddingLoader(logger)
@@ -501,5 +461,525 @@ func BenchmarkEmbeddingLoader_ParseVectorLine(b *testing.B) {
 	_, err := loader.LoadFromReader(reader)
 	if err != nil {
 		b.Fatalf("Failed to load: %v", err)
+	}
+}
+
+// Tests for multi-file loading functionality
+
+func TestEmbeddingLoader_LoadMultipleFiles_EmptyList(t *testing.T) {
+	logger := &mockLogger{}
+	loader := NewEmbeddingLoader(logger)
+
+	model, err := loader.LoadMultipleFiles([]string{})
+
+	if err != ErrNoVectorFiles {
+		t.Errorf("Expected ErrNoVectorFiles, got: %v", err)
+	}
+
+	if model != nil {
+		t.Error("Expected nil model for empty file list")
+	}
+}
+
+func TestEmbeddingLoader_LoadMultipleFiles_SingleFile(t *testing.T) {
+	logger := &mockLogger{}
+	loader := NewEmbeddingLoader(logger)
+
+	// Create temporary file
+	tmpFile, err := os.CreateTemp("", "test_single_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	// Write test content
+	vecContent := `3 2
+hello 0.1 0.2
+world 0.3 0.4
+test 0.5 0.6`
+
+	if _, err := tmpFile.WriteString(vecContent); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	// Load from single file
+	model, err := loader.LoadMultipleFiles([]string{tmpFile.Name()})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	if model == nil {
+		t.Fatal("Expected non-nil VectorModel")
+	}
+
+	if model.Dimension() != 2 {
+		t.Errorf("Expected dimension 2, got %d", model.Dimension())
+	}
+
+	if model.VocabularySize() != 3 {
+		t.Errorf("Expected vocabulary size 3, got %d", model.VocabularySize())
+	}
+}
+
+func TestEmbeddingLoader_LoadMultipleFiles_TwoFiles(t *testing.T) {
+	logger := &mockLogger{}
+	loader := NewEmbeddingLoader(logger)
+
+	// Create first temporary file (Chinese words)
+	tmpFile1, err := os.CreateTemp("", "test_chinese_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file 1: %v", err)
+	}
+	defer os.Remove(tmpFile1.Name())
+
+	vecContent1 := `3 3
+苹果 0.1 0.2 0.3
+香蕉 0.4 0.5 0.6
+橙子 0.7 0.8 0.9`
+
+	if _, err := tmpFile1.WriteString(vecContent1); err != nil {
+		t.Fatalf("Failed to write to temp file 1: %v", err)
+	}
+	tmpFile1.Close()
+
+	// Create second temporary file (English words)
+	tmpFile2, err := os.CreateTemp("", "test_english_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file 2: %v", err)
+	}
+	defer os.Remove(tmpFile2.Name())
+
+	vecContent2 := `3 3
+apple 0.11 0.21 0.31
+banana 0.41 0.51 0.61
+orange 0.71 0.81 0.91`
+
+	if _, err := tmpFile2.WriteString(vecContent2); err != nil {
+		t.Fatalf("Failed to write to temp file 2: %v", err)
+	}
+	tmpFile2.Close()
+
+	// Load from both files
+	model, err := loader.LoadMultipleFiles([]string{tmpFile1.Name(), tmpFile2.Name()})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	if model == nil {
+		t.Fatal("Expected non-nil VectorModel")
+	}
+
+	// Should have 6 words total (3 Chinese + 3 English)
+	if model.VocabularySize() != 6 {
+		t.Errorf("Expected vocabulary size 6, got %d", model.VocabularySize())
+	}
+
+	// Check Chinese words
+	vec1, exists := model.GetVector("苹果")
+	if !exists {
+		t.Error("Expected 苹果 to exist")
+	}
+	if len(vec1) != 3 || vec1[0] != 0.1 || vec1[1] != 0.2 || vec1[2] != 0.3 {
+		t.Errorf("Expected 苹果 vector [0.1, 0.2, 0.3], got %v", vec1)
+	}
+
+	// Check English words
+	vec2, exists := model.GetVector("apple")
+	if !exists {
+		t.Error("Expected apple to exist")
+	}
+	if len(vec2) != 3 || vec2[0] != 0.11 || vec2[1] != 0.21 || vec2[2] != 0.31 {
+		t.Errorf("Expected apple vector [0.11, 0.21, 0.31], got %v", vec2)
+	}
+}
+
+func TestEmbeddingLoader_LoadMultipleFiles_DimensionMismatch(t *testing.T) {
+	logger := &mockLogger{}
+	loader := NewEmbeddingLoader(logger)
+
+	// Create first file with dimension 2
+	tmpFile1, err := os.CreateTemp("", "test_dim2_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file 1: %v", err)
+	}
+	defer os.Remove(tmpFile1.Name())
+
+	vecContent1 := `2 2
+word1 0.1 0.2
+word2 0.3 0.4`
+
+	if _, err := tmpFile1.WriteString(vecContent1); err != nil {
+		t.Fatalf("Failed to write to temp file 1: %v", err)
+	}
+	tmpFile1.Close()
+
+	// Create second file with dimension 3 (mismatch)
+	tmpFile2, err := os.CreateTemp("", "test_dim3_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file 2: %v", err)
+	}
+	defer os.Remove(tmpFile2.Name())
+
+	vecContent2 := `2 3
+word3 0.5 0.6 0.7
+word4 0.8 0.9 1.0`
+
+	if _, err := tmpFile2.WriteString(vecContent2); err != nil {
+		t.Fatalf("Failed to write to temp file 2: %v", err)
+	}
+	tmpFile2.Close()
+
+	// Load from both files - should fail with dimension mismatch
+	model, err := loader.LoadMultipleFiles([]string{tmpFile1.Name(), tmpFile2.Name()})
+
+	if err == nil {
+		t.Error("Expected error for dimension mismatch, got nil")
+	}
+
+	if model != nil {
+		t.Error("Expected nil model for dimension mismatch")
+	}
+
+	// Check that error contains ErrDimensionMismatch
+	if err != nil && !strings.Contains(err.Error(), "dimension mismatch") {
+		t.Errorf("Expected dimension mismatch error, got: %v", err)
+	}
+}
+
+func TestEmbeddingLoader_LoadMultipleFiles_DuplicateWords(t *testing.T) {
+	logger := &mockLogger{}
+	loader := NewEmbeddingLoader(logger)
+
+	// Create first file
+	tmpFile1, err := os.CreateTemp("", "test_dup1_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file 1: %v", err)
+	}
+	defer os.Remove(tmpFile1.Name())
+
+	vecContent1 := `3 2
+word1 0.1 0.2
+duplicate 0.3 0.4
+word2 0.5 0.6`
+
+	if _, err := tmpFile1.WriteString(vecContent1); err != nil {
+		t.Fatalf("Failed to write to temp file 1: %v", err)
+	}
+	tmpFile1.Close()
+
+	// Create second file with duplicate word (should overwrite)
+	tmpFile2, err := os.CreateTemp("", "test_dup2_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file 2: %v", err)
+	}
+	defer os.Remove(tmpFile2.Name())
+
+	vecContent2 := `2 2
+duplicate 0.7 0.8
+word3 0.9 1.0`
+
+	if _, err := tmpFile2.WriteString(vecContent2); err != nil {
+		t.Fatalf("Failed to write to temp file 2: %v", err)
+	}
+	tmpFile2.Close()
+
+	// Load from both files
+	model, err := loader.LoadMultipleFiles([]string{tmpFile1.Name(), tmpFile2.Name()})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// Should have 4 unique words (word1, duplicate, word2, word3)
+	if model.VocabularySize() != 4 {
+		t.Errorf("Expected vocabulary size 4, got %d", model.VocabularySize())
+	}
+
+	// Check that duplicate word has the vector from the second file
+	vec, exists := model.GetVector("duplicate")
+	if !exists {
+		t.Error("Expected duplicate to exist")
+	}
+	if len(vec) != 2 || vec[0] != 0.7 || vec[1] != 0.8 {
+		t.Errorf("Expected duplicate vector [0.7, 0.8] from second file, got %v", vec)
+	}
+}
+
+func TestEmbeddingLoader_LoadMultipleFiles_FileNotFound(t *testing.T) {
+	logger := &mockLogger{}
+	loader := NewEmbeddingLoader(logger)
+
+	// Create one valid file
+	tmpFile, err := os.CreateTemp("", "test_valid_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	vecContent := `2 2
+word1 0.1 0.2
+word2 0.3 0.4`
+
+	if _, err := tmpFile.WriteString(vecContent); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	// Try to load with one valid and one nonexistent file
+	model, err := loader.LoadMultipleFiles([]string{tmpFile.Name(), "nonexistent.vec"})
+
+	if err == nil {
+		t.Error("Expected error for nonexistent file, got nil")
+	}
+
+	if model != nil {
+		t.Error("Expected nil model when file not found")
+	}
+
+	// Check that error contains file not found
+	if err != nil && !strings.Contains(err.Error(), "not found") {
+		t.Errorf("Expected file not found error, got: %v", err)
+	}
+}
+
+func TestEmbeddingLoader_LoadMultipleFiles_MemoryUsage(t *testing.T) {
+	logger := &mockLogger{}
+	loader := NewEmbeddingLoader(logger)
+
+	// Create two files with known content
+	tmpFile1, err := os.CreateTemp("", "test_mem1_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file 1: %v", err)
+	}
+	defer os.Remove(tmpFile1.Name())
+
+	vecContent1 := `5 10
+word1 ` + strings.Repeat("0.1 ", 10) + `
+word2 ` + strings.Repeat("0.2 ", 10) + `
+word3 ` + strings.Repeat("0.3 ", 10) + `
+word4 ` + strings.Repeat("0.4 ", 10) + `
+word5 ` + strings.Repeat("0.5 ", 10)
+
+	if _, err := tmpFile1.WriteString(vecContent1); err != nil {
+		t.Fatalf("Failed to write to temp file 1: %v", err)
+	}
+	tmpFile1.Close()
+
+	tmpFile2, err := os.CreateTemp("", "test_mem2_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file 2: %v", err)
+	}
+	defer os.Remove(tmpFile2.Name())
+
+	vecContent2 := `5 10
+word6 ` + strings.Repeat("0.6 ", 10) + `
+word7 ` + strings.Repeat("0.7 ", 10) + `
+word8 ` + strings.Repeat("0.8 ", 10) + `
+word9 ` + strings.Repeat("0.9 ", 10) + `
+word10 ` + strings.Repeat("1.0 ", 10)
+
+	if _, err := tmpFile2.WriteString(vecContent2); err != nil {
+		t.Fatalf("Failed to write to temp file 2: %v", err)
+	}
+	tmpFile2.Close()
+
+	// Load from both files
+	model, err := loader.LoadMultipleFiles([]string{tmpFile1.Name(), tmpFile2.Name()})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// Check memory usage is tracked
+	memUsage := model.MemoryUsage()
+	if memUsage <= 0 {
+		t.Errorf("Expected positive memory usage, got %d", memUsage)
+	}
+
+	// Memory should be at least the size of the vectors
+	// 10 words * 10 dimensions * 4 bytes per float32 = 400 bytes minimum
+	minExpectedMemory := int64(10 * 10 * 4)
+	if memUsage < minExpectedMemory {
+		t.Errorf("Expected memory usage >= %d, got %d", minExpectedMemory, memUsage)
+	}
+
+	// Check vocabulary size
+	if model.VocabularySize() != 10 {
+		t.Errorf("Expected vocabulary size 10, got %d", model.VocabularySize())
+	}
+}
+
+func TestEmbeddingLoader_LoadMultipleFiles_ProgressCallback(t *testing.T) {
+	logger := &mockLogger{}
+	loader := NewEmbeddingLoader(logger)
+
+	// Track progress callback invocations
+	var progressCalls []struct {
+		loaded int
+		total  int
+		memory int64
+	}
+
+	// Set progress callback
+	loader.SetProgressCallback(func(loaded, total int, memoryUsage int64) {
+		progressCalls = append(progressCalls, struct {
+			loaded int
+			total  int
+			memory int64
+		}{loaded, total, memoryUsage})
+	})
+
+	// Create two files with enough vectors to trigger progress reporting
+	tmpFile1, err := os.CreateTemp("", "test_progress1_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file 1: %v", err)
+	}
+	defer os.Remove(tmpFile1.Name())
+
+	var builder1 strings.Builder
+	builder1.WriteString("8000 2\n")
+	for i := range 8000 {
+		builder1.WriteString(fmt.Sprintf("word%d 0.1 0.2\n", i))
+	}
+
+	if _, err := tmpFile1.WriteString(builder1.String()); err != nil {
+		t.Fatalf("Failed to write to temp file 1: %v", err)
+	}
+	tmpFile1.Close()
+
+	tmpFile2, err := os.CreateTemp("", "test_progress2_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file 2: %v", err)
+	}
+	defer os.Remove(tmpFile2.Name())
+
+	var builder2 strings.Builder
+	builder2.WriteString("7000 2\n")
+	for i := range 7000 {
+		builder2.WriteString(fmt.Sprintf("word%d 0.3 0.4\n", i+8000))
+	}
+
+	if _, err := tmpFile2.WriteString(builder2.String()); err != nil {
+		t.Fatalf("Failed to write to temp file 2: %v", err)
+	}
+	tmpFile2.Close()
+
+	// Load from both files
+	model, err := loader.LoadMultipleFiles([]string{tmpFile1.Name(), tmpFile2.Name()})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// Should have received progress callbacks
+	if len(progressCalls) == 0 {
+		t.Error("Expected at least one progress callback")
+	}
+
+	// Verify memory usage is reported in callbacks
+	for _, call := range progressCalls {
+		if call.memory <= 0 {
+			t.Errorf("Expected positive memory usage in callback, got %d", call.memory)
+		}
+	}
+
+	// Check final vocabulary size
+	if model.VocabularySize() != 15000 {
+		t.Errorf("Expected vocabulary size 15000, got %d", model.VocabularySize())
+	}
+}
+
+func TestEmbeddingLoader_LoadMultipleFiles_InvalidSecondFile(t *testing.T) {
+	logger := &mockLogger{}
+	loader := NewEmbeddingLoader(logger)
+
+	// Create valid first file
+	tmpFile1, err := os.CreateTemp("", "test_valid_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file 1: %v", err)
+	}
+	defer os.Remove(tmpFile1.Name())
+
+	vecContent1 := `2 2
+word1 0.1 0.2
+word2 0.3 0.4`
+
+	if _, err := tmpFile1.WriteString(vecContent1); err != nil {
+		t.Fatalf("Failed to write to temp file 1: %v", err)
+	}
+	tmpFile1.Close()
+
+	// Create invalid second file
+	tmpFile2, err := os.CreateTemp("", "test_invalid_*.vec")
+	if err != nil {
+		t.Fatalf("Failed to create temp file 2: %v", err)
+	}
+	defer os.Remove(tmpFile2.Name())
+
+	// Write invalid content (empty)
+	tmpFile2.Close()
+
+	// Try to load both files - should fail on second file
+	model, err := loader.LoadMultipleFiles([]string{tmpFile1.Name(), tmpFile2.Name()})
+
+	if err == nil {
+		t.Error("Expected error for invalid second file, got nil")
+	}
+
+	if model != nil {
+		t.Error("Expected nil model when second file is invalid")
+	}
+}
+
+func TestEmbeddingLoader_LoadMultipleFiles_ThreeFiles(t *testing.T) {
+	logger := &mockLogger{}
+	loader := NewEmbeddingLoader(logger)
+
+	// Create three temporary files
+	files := make([]*os.File, 3)
+	filePaths := make([]string, 3)
+	contents := []string{
+		`2 2
+word1 0.1 0.2
+word2 0.3 0.4`,
+		`2 2
+word3 0.5 0.6
+word4 0.7 0.8`,
+		`2 2
+word5 0.9 1.0
+word6 1.1 1.2`,
+	}
+
+	for i := range 3 {
+		tmpFile, err := os.CreateTemp("", fmt.Sprintf("test_three_%d_*.vec", i))
+		if err != nil {
+			t.Fatalf("Failed to create temp file %d: %v", i, err)
+		}
+		defer os.Remove(tmpFile.Name())
+
+		if _, err := tmpFile.WriteString(contents[i]); err != nil {
+			t.Fatalf("Failed to write to temp file %d: %v", i, err)
+		}
+		tmpFile.Close()
+
+		files[i] = tmpFile
+		filePaths[i] = tmpFile.Name()
+	}
+
+	// Load from all three files
+	model, err := loader.LoadMultipleFiles(filePaths)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// Should have 6 words total
+	if model.VocabularySize() != 6 {
+		t.Errorf("Expected vocabulary size 6, got %d", model.VocabularySize())
+	}
+
+	// Verify all words are present
+	expectedWords := []string{"word1", "word2", "word3", "word4", "word5", "word6"}
+	for _, word := range expectedWords {
+		if _, exists := model.GetVector(word); !exists {
+			t.Errorf("Expected word %s to exist", word)
+		}
 	}
 }

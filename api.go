@@ -94,6 +94,11 @@ type EmbeddingLoader interface {
 	// LoadFromReader loads vectors from any io.Reader
 	LoadFromReader(reader io.Reader) (VectorModel, error)
 
+	// LoadMultipleFiles loads vectors from multiple .vec files and merges them into a single model
+	// All files must have the same vector dimension, otherwise ErrDimensionMismatch is returned
+	// If duplicate words exist across files, later files will overwrite earlier ones
+	LoadMultipleFiles(paths []string) (VectorModel, error)
+
 	// SetProgressCallback sets a callback for progress reporting during loading
 	SetProgressCallback(callback ProgressCallback)
 }
