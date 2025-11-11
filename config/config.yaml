@@ -22,3 +22,14 @@ enable_sampling: false
 sample_initial: 100
 sample_thereafter: 1000
 
+# ==>> Semantic Matcher <<==
+semantic_matcher:
+  vector_file_paths: [
+    "/Users/kyden/git-space/semantic_matcher/vector/wiki.en.align.vec", 
+    "/Users/kyden/git-space/semantic_matcher/vector/wiki.zh.align.vec"]
+  max_sequence_length: 512
+  chinese_stop_words_path: ""
+  english_stop_words_path: ""
+  enable_stats: true
+  memory_limit_bytes: 10737418240 # 10GB
+  supported_languages: ["en", "zh"]

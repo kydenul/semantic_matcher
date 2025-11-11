@@ -87,7 +87,8 @@ func NewSemanticMatcherFromConfig(config *Config, logger Logger) (SemanticMatche
 	loader := NewEmbeddingLoader(logger)
 
 	// Load vector model from file(s)
-	logger.Infof("Loading vector model, file_count: %d, paths: %v", len(config.VectorFilePaths), config.VectorFilePaths)
+	logger.Infof("Loading vector model, file_count: %d, paths: %v",
+		len(config.VectorFilePaths), config.VectorFilePaths)
 
 	// Load vector model using multi-file loading (supports single or multiple files)
 	model, err := loader.LoadMultipleFiles(config.VectorFilePaths)
@@ -99,8 +100,10 @@ func NewSemanticMatcherFromConfig(config *Config, logger Logger) (SemanticMatche
 	}
 
 	// Log detailed information about loaded model
-	logger.Infof("Vector model loaded successfully, file_count: %d, vocabulary_size: %d, dimension: %d, memory_mb: %.2f",
-		len(config.VectorFilePaths), model.VocabularySize(), model.Dimension(), float64(model.MemoryUsage())/(1024*1024))
+	logger.Infof("Vector model loaded successfully, file_count: %d, "+
+		"vocabulary_size: %d, dimension: %d, memory_mb: %.2f",
+		len(config.VectorFilePaths), model.VocabularySize(),
+		model.Dimension(), float64(model.MemoryUsage())/(1024*1024))
 
 	// Check memory limit
 	if config.MemoryLimit > 0 {
@@ -144,8 +147,12 @@ func NewSemanticMatcherFromConfig(config *Config, logger Logger) (SemanticMatche
 	logger.Infof(
 		"SemanticMatcher initialized successfully, file_count: %d, vector_dimension: %d, vocabulary_size: %d, "+
 			"memory_usage_mb: %.2f, supported_languages: %v",
-		len(config.VectorFilePaths), model.Dimension(), model.VocabularySize(),
-		float64(model.MemoryUsage())/(1024*1024), config.SupportedLanguages)
+		len(config.VectorFilePaths),
+		model.Dimension(),
+		model.VocabularySize(),
+		float64(model.MemoryUsage())/(1024*1024),
+		config.SupportedLanguages,
+	)
 
 	return matcher, nil
 }

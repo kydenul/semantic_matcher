@@ -2,6 +2,8 @@ package semanticmatcher
 
 import (
 	"os"
+
+	"github.com/spf13/viper"
 )
 
 const (
@@ -20,13 +22,13 @@ type Config struct {
 	// 	- Multiple aligned files: []string{"vector/wiki.zh.align.vec", "vector/wiki.en.align.vec"}
 	// All files must have the same vector dimension. If duplicate words exist across files,
 	// later files will override earlier ones.
-	VectorFilePaths    []string `json:"vector_file_paths"`
-	MaxSequenceLen     int      `json:"max_sequence_length"`
-	ChineseStopWords   string   `json:"chinese_stop_words_path"`
-	EnglishStopWords   string   `json:"english_stop_words_path"`
-	EnableStats        bool     `json:"enable_stats"`
-	MemoryLimit        int64    `json:"memory_limit_bytes"`
-	SupportedLanguages []string `json:"supported_languages"` // ["zh", "en"]
+	VectorFilePaths    []string `mapstructure:"vector_file_paths"`
+	MaxSequenceLen     int      `mapstructure:"max_sequence_length"`
+	ChineseStopWords   string   `mapstructure:"chinese_stop_words_path"`
+	EnglishStopWords   string   `mapstructure:"english_stop_words_path"`
+	EnableStats        bool     `mapstructure:"enable_stats"`
+	MemoryLimit        int64    `mapstructure:"memory_limit_bytes"`
+	SupportedLanguages []string `mapstructure:"supported_languages"` // ["zh", "en"]
 }
 
 // DefaultConfig returns a configuration with sensible defaults
@@ -40,6 +42,30 @@ func DefaultConfig() *Config {
 		MemoryLimit:        DefaultMemoryLimit,
 		SupportedLanguages: DefaultSupportedLanguages,
 	}
+}
+
+// LoadFromYAML loads configuration from a YAML file
+func LoadFromYAML(configPath string) (*Config, error) {
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
+
+	// Read the config file
+	if err := v.ReadInConfig(); err != nil {
+		return nil, err
+	}
+
+	config := DefaultConfig()
+	if err := v.UnmarshalKey("semantic_matcher", config); err != nil {
+		return nil, err
+	}
+
+	// Validate the loaded configuration
+	if err := Validate(config); err != nil {
+		return nil, err
+	}
+
+	return config, nil
 }
 
 // Validate checks if the configuration is valid

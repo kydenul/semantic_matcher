@@ -79,20 +79,21 @@ func (el *embeddingLoader) LoadMultipleFiles(paths []string) (VectorModel, error
 		// Load first file to create the model
 		if i == 0 {
 			loadedModel, err := el.LoadFromReader(file)
-			file.Close()
+			file.Close() //nolint:gosec
 			if err != nil {
 				return nil, fmt.Errorf("failed to load first file %s: %w", path, err)
 			}
 
-			model = loadedModel.(*vectorModel)
+			model = loadedModel.(*vectorModel) //nolint:errcheck
 			expectedDimension = model.Dimension()
 
-			el.logger.Infof("First file loaded, dimension: %d, vocabulary_size: %d, memory_mb: %.2f",
+			el.logger.Infof(
+				"First file loaded, dimension: %d, vocabulary_size: %d, memory_mb: %.2f",
 				expectedDimension, model.VocabularySize(), float64(model.MemoryUsage())/(1024*1024))
 		} else {
 			// Merge subsequent files into the existing model
 			err := el.LoadAndMergeIntoModel(model, file)
-			file.Close()
+			file.Close() //nolint:gosec
 			if err != nil {
 				return nil, fmt.Errorf("failed to merge file %s: %w", path, err)
 			}
@@ -102,17 +103,23 @@ func (el *embeddingLoader) LoadMultipleFiles(paths []string) (VectorModel, error
 		}
 	}
 
-	el.logger.Infof("All vector files loaded successfully, total_files: %d, final_vocabulary_size: %d, "+
-		"final_dimension: %d, total_memory_mb: %.2f",
-		len(paths), model.VocabularySize(), model.Dimension(), float64(model.MemoryUsage())/(1024*1024))
+	el.logger.Infof("All vector files loaded successfully, total_files: %d, "+
+		"final_vocabulary_size: %d, final_dimension: %d, total_memory_mb: %.2f",
+		len(paths), model.VocabularySize(),
+		model.Dimension(), float64(model.MemoryUsage())/(1024*1024))
 
 	return model, nil
 }
 
 // LoadAndMergeIntoModel loads vectors from a reader and merges them into an existing model
 // Returns ErrDimensionMismatch if the vector dimensions don't match
+//
+//nolint:cyclop,funlen
 func (el *embeddingLoader) LoadAndMergeIntoModel(model *vectorModel, reader io.Reader) error {
 	scanner := bufio.NewScanner(reader)
+	// Increase buffer size for better performance with large lines
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024) // 1MB max line size
 
 	// Read first line to get word count and dimension
 	if !scanner.Scan() {
@@ -127,7 +134,8 @@ func (el *embeddingLoader) LoadAndMergeIntoModel(model *vectorModel, reader io.R
 	// Parse first line: "word_count dimension"
 	parts := strings.Fields(firstLine)
 	if len(parts) != 2 {
-		return fmt.Errorf("%w: first line must contain word count and dimension", ErrInvalidVectorFormat)
+		return fmt.Errorf("%w: first line must contain word count and dimension",
+			ErrInvalidVectorFormat)
 	}
 
 	wordCount, err := cast.ToIntE(parts[0])
@@ -142,10 +150,15 @@ func (el *embeddingLoader) LoadAndMergeIntoModel(model *vectorModel, reader io.R
 
 	// Verify dimension matches the model
 	if dimension != model.Dimension() {
-		return fmt.Errorf("%w: expected dimension %d, got %d", ErrDimensionMismatch, model.Dimension(), dimension)
+		return fmt.Errorf("%w: expected dimension %d, got %d",
+			ErrDimensionMismatch, model.Dimension(), dimension)
 	}
 
 	el.logger.Infof("Merging vector file, word_count: %d, dimension: %d", wordCount, dimension)
+
+	// Preallocate additional capacity for the merge
+	currentSize := model.VocabularySize()
+	model.PreallocateCapacity(currentSize + wordCount)
 
 	lineNumber := 1
 	loadedVectors := 0
@@ -160,20 +173,35 @@ func (el *embeddingLoader) LoadAndMergeIntoModel(model *vectorModel, reader io.R
 		progressInterval = 1000
 	}
 
+	// Batch loading configuration
+	batchSize := 5000 // Add vectors in batches to reduce lock contention
+	wordsBatch := make([]string, 0, batchSize)
+	vectorsBatch := make([][]float32, 0, batchSize)
+
+	// Track overwrites (need to check before batch add)
+	checkOverwrites := func() {
+		for _, word := range wordsBatch {
+			if _, exists := model.vectors[word]; exists {
+				overwrittenVectors++
+			}
+		}
+	}
+
 	// Process each line
 	for scanner.Scan() {
 		lineNumber++
-		line := strings.TrimSpace(scanner.Text())
+		line := scanner.Text()
 
 		// Skip empty lines
-		if line == "" {
+		if len(line) == 0 {
 			continue
 		}
 
 		// Parse vector line: "word value1 value2 ... valueN"
 		parts := strings.Fields(line)
 		if len(parts) != dimension+1 {
-			el.logger.Warnf("Skipping invalid line, line_number: %d, expected_parts: %d, actual_parts: %d",
+			el.logger.Warnf("Skipping invalid line, line_number: %d, "+
+				"expected_parts: %d, actual_parts: %d",
 				lineNumber, dimension+1, len(parts))
 			continue
 		}
@@ -186,7 +214,8 @@ func (el *embeddingLoader) LoadAndMergeIntoModel(model *vectorModel, reader io.R
 		for i := 1; i <= dimension; i++ {
 			val, err := cast.ToFloat64E(parts[i])
 			if err != nil {
-				el.logger.Warnf("Skipping line with invalid float value, line_number: %d, word: %s, value: %s",
+				el.logger.Warnf("Skipping line with invalid float value, "+
+					"line_number: %d, word: %s, value: %s",
 					lineNumber, word, parts[i])
 				parseError = true
 				break
@@ -198,29 +227,43 @@ func (el *embeddingLoader) LoadAndMergeIntoModel(model *vectorModel, reader io.R
 			continue
 		}
 
-		// Check if word already exists (will be overwritten)
-		if _, exists := model.vectors[word]; exists {
-			overwrittenVectors++
-		}
+		// Add to batch
+		wordsBatch = append(wordsBatch, word)
+		vectorsBatch = append(vectorsBatch, vector)
 
-		// Add vector to model (will overwrite if exists)
-		model.AddVector(word, vector)
-		loadedVectors++
+		// Flush batch when it reaches the batch size
+		if len(wordsBatch) >= batchSize {
+			checkOverwrites()
+			added := model.AddVectorsBatch(wordsBatch, vectorsBatch)
+			loadedVectors += added
 
-		// Report progress at intervals
-		if loadedVectors%progressInterval == 0 {
-			memUsage := model.MemoryUsage()
+			// Clear batches for reuse
+			wordsBatch = wordsBatch[:0]
+			vectorsBatch = vectorsBatch[:0]
 
-			el.logger.Infof("Merge progress, loaded_vectors: %d, target: %d, progress_pct: %.2f, "+
-				"overwritten: %d, memory_mb: %.2f",
-				loadedVectors, wordCount, float64(loadedVectors)/float64(wordCount)*100,
-				overwrittenVectors, float64(memUsage)/(1024*1024))
+			// Report progress at intervals
+			if loadedVectors%progressInterval == 0 {
+				memUsage := model.MemoryUsage()
 
-			// Call progress callback if set
-			if el.progressCallback != nil {
-				el.progressCallback(loadedVectors, wordCount, memUsage)
+				el.logger.Infof("Merge progress, loaded_vectors: %d, "+
+					"target: %d, progress_pct: %.2f, "+
+					"overwritten: %d, memory_mb: %.2f",
+					loadedVectors, wordCount, float64(loadedVectors)/float64(wordCount)*100,
+					overwrittenVectors, float64(memUsage)/(1024*1024))
+
+				// Call progress callback if set
+				if el.progressCallback != nil {
+					el.progressCallback(loadedVectors, wordCount, memUsage)
+				}
 			}
 		}
+	}
+
+	// Flush remaining batch
+	if len(wordsBatch) > 0 {
+		checkOverwrites()
+		added := model.AddVectorsBatch(wordsBatch, vectorsBatch)
+		loadedVectors += added
 	}
 
 	// Check for scanner errors
@@ -232,7 +275,12 @@ func (el *embeddingLoader) LoadAndMergeIntoModel(model *vectorModel, reader io.R
 
 	el.logger.Infof("Vector merge completed, loaded_vectors: %d, expected_vectors: %d, "+
 		"overwritten_vectors: %d, final_vocabulary_size: %d, memory_usage_mb: %.2f",
-		loadedVectors, wordCount, overwrittenVectors, model.VocabularySize(), float64(finalMemUsage)/(1024*1024))
+		loadedVectors,
+		wordCount,
+		overwrittenVectors,
+		model.VocabularySize(),
+		float64(finalMemUsage)/(1024*1024),
+	)
 
 	// Final progress callback
 	if el.progressCallback != nil {
@@ -257,6 +305,9 @@ func (el *embeddingLoader) LoadAndMergeIntoModel(model *vectorModel, reader io.R
 //nolint:cyclop
 func (el *embeddingLoader) LoadFromReader(reader io.Reader) (VectorModel, error) {
 	scanner := bufio.NewScanner(reader)
+	// Increase buffer size for better performance with large lines
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024) // 1MB max line size
 
 	// Read first line to get word count and dimension
 	if !scanner.Scan() {
@@ -296,6 +347,9 @@ func (el *embeddingLoader) LoadFromReader(reader io.Reader) (VectorModel, error)
 		return nil, fmt.Errorf("%w: failed to create vector model", ErrInvalidVectorFormat)
 	}
 
+	// Preallocate capacity to avoid map rehashing
+	model.PreallocateCapacity(wordCount)
+
 	lineNumber := 1
 	loadedVectors := 0
 	progressInterval := 10000 // Report progress every 10k vectors
@@ -308,13 +362,18 @@ func (el *embeddingLoader) LoadFromReader(reader io.Reader) (VectorModel, error)
 		progressInterval = 1000
 	}
 
+	// Batch loading configuration
+	batchSize := 1000 // Add vectors in batches to reduce lock contention
+	wordsBatch := make([]string, 0, batchSize)
+	vectorsBatch := make([][]float32, 0, batchSize)
+
 	// Process each line
 	for scanner.Scan() {
 		lineNumber++
-		line := strings.TrimSpace(scanner.Text())
+		line := scanner.Text()
 
 		// Skip empty lines
-		if line == "" {
+		if len(line) == 0 {
 			continue
 		}
 
@@ -348,28 +407,44 @@ func (el *embeddingLoader) LoadFromReader(reader io.Reader) (VectorModel, error)
 			continue
 		}
 
-		// Add vector to model
-		model.AddVector(word, vector)
-		loadedVectors++
+		// Add to batch
+		wordsBatch = append(wordsBatch, word)
+		vectorsBatch = append(vectorsBatch, vector)
 
-		// Report progress at intervals
-		if loadedVectors%progressInterval == 0 {
-			memUsage := model.MemoryUsage()
+		// Flush batch when it reaches the batch size
+		if len(wordsBatch) >= batchSize {
+			added := model.AddVectorsBatch(wordsBatch, vectorsBatch)
+			loadedVectors += added
 
-			// Log progress
-			el.logger.Infof(
-				"Loading progress, loaded_vectors: %d, target: %d, progress_pct: %.2f, memory_mb: %.2f",
-				loadedVectors,
-				wordCount,
-				float64(loadedVectors)/float64(wordCount)*100,
-				float64(memUsage)/(1024*1024),
-			)
+			// Clear batches for reuse
+			wordsBatch = wordsBatch[:0]
+			vectorsBatch = vectorsBatch[:0]
 
-			// Call progress callback if set
-			if el.progressCallback != nil {
-				el.progressCallback(loadedVectors, wordCount, memUsage)
+			// Report progress at intervals
+			if loadedVectors%progressInterval == 0 {
+				memUsage := model.MemoryUsage()
+
+				// Log progress
+				el.logger.Infof(
+					"Loading progress, loaded_vectors: %d, target: %d, progress_pct: %.2f, memory_mb: %.2f",
+					loadedVectors,
+					wordCount,
+					float64(loadedVectors)/float64(wordCount)*100,
+					float64(memUsage)/(1024*1024),
+				)
+
+				// Call progress callback if set
+				if el.progressCallback != nil {
+					el.progressCallback(loadedVectors, wordCount, memUsage)
+				}
 			}
 		}
+	}
+
+	// Flush remaining batch
+	if len(wordsBatch) > 0 {
+		added := model.AddVectorsBatch(wordsBatch, vectorsBatch)
+		loadedVectors += added
 	}
 
 	// Check for scanner errors

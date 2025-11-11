@@ -136,6 +136,64 @@ func (vm *vectorModel) AddVector(word string, vector []float32) {
 	vm.updateMemoryUsage(internedWord, vectorCopy)
 }
 
+// AddVectorsBatch adds multiple word-vector pairs in a single lock operation
+// This is much more efficient than calling AddVector repeatedly
+// Returns the number of vectors successfully added
+func (vm *vectorModel) AddVectorsBatch(words []string, vectors [][]float32) int {
+	if len(words) != len(vectors) {
+		return 0
+	}
+
+	vm.mtx.Lock()
+	defer vm.mtx.Unlock()
+
+	addedCount := 0
+	for i := range words {
+		// Validate vector dimension
+		if len(vectors[i]) != vm.dimension {
+			continue // Skip vectors with wrong dimension
+		}
+
+		// Use string interning to reduce memory usage
+		internedWord := vm.internString(words[i])
+
+		// Store a copy to prevent external modification
+		vectorCopy := make([]float32, len(vectors[i]))
+		copy(vectorCopy, vectors[i])
+		vm.vectors[internedWord] = vectorCopy
+
+		// Update memory usage estimate
+		vm.updateMemoryUsage(internedWord, vectorCopy)
+		addedCount++
+	}
+
+	return addedCount
+}
+
+// PreallocateCapacity preallocates map capacity to reduce rehashing during loading
+// This should be called before loading large vector files
+func (vm *vectorModel) PreallocateCapacity(expectedSize int) {
+	vm.mtx.Lock()
+	defer vm.mtx.Unlock()
+
+	// Only preallocate if current capacity is smaller
+	if len(vm.vectors) < expectedSize {
+		newVectors := make(map[string][]float32, expectedSize)
+		newStringIntern := make(map[string]string, expectedSize)
+
+		// Copy existing data
+		for k, v := range vm.vectors {
+			newVectors[k] = v
+		}
+		for k, v := range vm.stringIntern {
+			newStringIntern[k] = v
+		}
+
+		vm.vectors = newVectors
+		vm.stringIntern = newStringIntern
+	}
+}
+
 // internString implements string interning to reduce memory usage
 // Returns the interned string from the pool or adds it if new
 func (vm *vectorModel) internString(s string) string {

@@ -72,21 +72,22 @@ func loadCrossLingualModel(pathPrefix string, logger log.Logger) sm.SemanticMatc
 	logger.Infoln("This model contains both Chinese and English words in the same vector space.")
 	logger.Infoln()
 
-	// Create configuration with multiple aligned vector files
-	// The system will load and merge all files into a single vector model
-	cfg := sm.DefaultConfig()
-	cfg.VectorFilePaths = []string{
-		filepath.Join(pathPrefix, "vector/wiki.zh.align.vec"), // Chinese aligned vectors
-		filepath.Join(pathPrefix, "vector/wiki.en.align.vec"), // English aligned vectors
-	}
-	cfg.EnableStats = true
-	cfg.MemoryLimit = 10 * 1024 * 1024 * 1024 // 10GB
+	// // Create configuration with multiple aligned vector files
+	// // The system will load and merge all files into a single vector model
+	// cfg := sm.DefaultConfig()
+	// cfg.VectorFilePaths = []string{
+	// 	filepath.Join(pathPrefix, "vector/wiki.zh.align.vec"), // Chinese aligned vectors
+	// 	filepath.Join(pathPrefix, "vector/wiki.en.align.vec"), // English aligned vectors
+	// }
+	// cfg.EnableStats = true
+	// cfg.MemoryLimit = 10 * 1024 * 1024 * 1024 // 10GB
 
-	logger.Infof("Configuration:")
-	logger.Infof("  Vector files: %v", cfg.VectorFilePaths)
-	logger.Infof("  Memory limit: %.2f GB", float64(cfg.MemoryLimit)/(1024*1024*1024))
-	logger.Infof("  Supported languages: %v", cfg.SupportedLanguages)
-	logger.Infoln()
+	cfg, err := sm.LoadFromYAML(filepath.Join(pathPrefix, "config/config.yaml"))
+	if err != nil {
+		logger.Errorf("Failed to load config, exiting")
+		return nil
+	}
+	logger.Infof("Configuration: %+v", cfg)
 
 	// Create semantic matcher from configuration
 	start := time.Now()
@@ -153,7 +154,8 @@ func chineseToEnglishExample(matcher sm.SemanticMatcher, logger log.Logger) {
 
 	logger.Infoln("Analysis:")
 	logger.Infoln("  ✓ English keywords successfully matched against Chinese text")
-	logger.Infoln("  ✓ Semantically similar terms (e.g., '人工智能' ↔ 'artificial intelligence') have high scores")
+	logger.Infoln("  ✓ Semantically similar terms (e.g., '人工智能' ↔ " +
+		"'artificial intelligence') have high scores")
 	logger.Infoln("  ✓ Less relevant keywords (e.g., 'data mining') have lower scores")
 }
 
@@ -292,7 +294,8 @@ func wordPairSimilarityExample(matcher sm.SemanticMatcher, logger log.Logger) {
 	}
 
 	logger.Infoln("Computing similarity scores for Chinese-English word pairs...")
-	logger.Infoln("In an aligned vector space, semantically equivalent words should have high similarity.")
+	logger.Infoln("In an aligned vector space, " +
+		"semantically equivalent words should have high similarity.")
 	logger.Infoln()
 
 	logger.Infoln("Word Pair Similarities:")

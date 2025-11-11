@@ -114,6 +114,9 @@ linters:
           - revive
           - perfsprint
           - unparam
+          - dupl
+          - goconst
+          - golines
 
 formatters:
   enable:
