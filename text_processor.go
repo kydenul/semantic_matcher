@@ -99,8 +99,9 @@ func NewTextProcessor() TextProcessor {
 		englishTokenizer: regexp.MustCompile(`\b\w+\b`),
 	}
 
-	// Initialize GSE Segmenter
-	_ = processor.seg.LoadDict()
+	// Initialize GSE Segmenter with embedded dictionary
+	// Use LoadDictEmbed() instead of LoadDict() to avoid file path issues
+	_ = processor.seg.LoadDictEmbed()
 
 	return processor
 }
@@ -113,8 +114,9 @@ func NewTextProcessorWithConfig(chineseStops, englishStops map[string]Empty) Tex
 		englishTokenizer: regexp.MustCompile(`\b\w+\b`),
 	}
 
-	// Initialize GSE segmenter
-	_ = processor.seg.LoadDict()
+	// Initialize GSE segmenter with embedded dictionary
+	// Use LoadDictEmbed() instead of LoadDict() to avoid file path issues
+	_ = processor.seg.LoadDictEmbed()
 
 	return processor
 }
