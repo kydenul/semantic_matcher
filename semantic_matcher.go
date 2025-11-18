@@ -1,6 +1,7 @@
 package semanticmatcher
 
 import (
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -164,10 +165,8 @@ func validateConfig(config *Config) error {
 	}
 
 	// Verify all vector files are non-empty strings
-	for _, path := range config.VectorFilePaths {
-		if path == "" {
-			return ErrInvalidConfiguration
-		}
+	if slices.Contains(config.VectorFilePaths, "") {
+		return ErrInvalidConfiguration
 	}
 
 	if config.MaxSequenceLen <= 0 {

@@ -11,6 +11,73 @@ import (
 	"github.com/go-ego/gse"
 )
 
+var (
+	ChineseStopWords = []string{
+		// 助词
+		"的", "地", "得", "了", "着", "过", "吧", "吗", "呢", "啊", "呀", "啦", "嘛",
+
+		// 介词
+		"在", "从", "向", "往", "于", "由", "把", "被", "对", "对于", "关于", "至于",
+
+		// 连词
+		"和", "与", "及", "并", "而", "但", "却", "不过", "或", "或者", "如果", "因为",
+		"所以", "于是", "那么", "这样", "那么", "这么", "那么", "那么",
+
+		// 副词
+		"不", "没", "无", "未", "非", "很", "太", "更", "最", "都", "也", "还", "又",
+		"再", "就", "才", "刚", "正", "在", "曾", "已经", "马上", "立刻", "顿时",
+
+		// 代词
+		"我", "你", "他", "她", "它", "我们", "你们", "他们", "她们", "它们", "自己",
+		"这", "那", "这些", "那些", "这个", "那个", "这里", "那里", "这么", "那么",
+
+		// 数词/量词
+		"一", "一个", "二", "三", "四", "五", "六", "七", "八", "九", "十", "百", "千", "万",
+		"几", "多少", "第", "一些", "所有", "每个", "任何",
+
+		// 常用动词
+		"是", "有", "在", "说", "要", "去", "来", "会", "能", "可以", "应该", "必须",
+		"需要", "想要", "希望", "觉得", "认为", "知道", "明白", "理解", "记得", "忘记",
+
+		// 时间/地点
+		"时", "时候", "时间", "地方", "处", "处所", "这里", "那里", "哪里", "什么",
+		"怎么", "为什么", "如何", "何时", "何地",
+	}
+
+	EnglishStopWords = []string{
+		// Articles
+		"a", "an", "the",
+
+		// Conjunctions
+		"and", "or", "but", "if", "while", "because", "as", "though", "although",
+
+		// Prepositions
+		"in", "on", "at", "by", "for", "with", "about", "against", "between",
+		"into", "through", "during", "before", "after", "above", "below", "up", "down",
+		"out", "off", "over", "under", "again", "further", "then", "once",
+
+		// Pronouns
+		"i", "me", "my", "myself", "we", "our", "ours", "ourselves", "you", "your",
+		"yours", "yourself", "yourselves", "he", "him", "his", "himself", "she",
+		"her", "hers", "herself", "it", "its", "itself", "they", "them", "their",
+		"theirs", "themselves",
+
+		// Common verbs
+		"am", "is", "are", "was", "were", "be", "been", "being", "have", "has",
+		"had", "having", "do", "does", "did", "doing", "will", "would", "shall",
+		"should", "can", "could", "may", "might", "must",
+
+		// Adverbs
+		"here", "there", "when", "where", "why", "how", "all", "any", "both", "each",
+		"few", "more", "most", "other", "some", "such", "no", "nor", "not", "only",
+		"own", "same", "so", "than", "too", "very", "just", "now",
+
+		// Others
+		"what", "which", "who", "whom", "this", "that", "these", "those", "one", "two",
+		"three", "four", "five", "six", "seven", "eight", "nine", "ten", "hundred", "thousand",
+	}
+)
+
 type Empty struct{}
 
 // textProcessor implements the TextProcessor interface for multilingual text processing
@@ -286,15 +353,8 @@ func (*textProcessor) isNumeric(token string) bool {
 
 // defaultChineseStopWords returns a default set of Chinese stop words
 func defaultChineseStopWords() map[string]Empty {
-	stopWords := []string{
-		"的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一", "一个", "上", "也", "很", "到",
-		"说", "要", "去", "会", "着", "没有", "看", "好", "自己", "这", "那", "他", "她", "它", "们", "这个",
-		"那个", "什么", "怎么", "为什么", "哪里", "哪个", "多少", "几", "第一", "第二", "可以", "应该", "能够",
-		"必须", "需要", "想要", "希望", "觉得", "认为", "知道", "明白", "理解", "记得", "忘记",
-	}
-
-	stopWordsMap := make(map[string]Empty)
-	for _, word := range stopWords {
+	stopWordsMap := make(map[string]Empty, len(ChineseStopWords))
+	for _, word := range ChineseStopWords {
 		stopWordsMap[word] = Empty{}
 	}
 
@@ -303,17 +363,8 @@ func defaultChineseStopWords() map[string]Empty {
 
 // defaultEnglishStopWords returns a default set of English stop words
 func defaultEnglishStopWords() map[string]Empty {
-	stopWords := []string{
-		"a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "he", "in", "is", "it", "its",
-		"of", "on", "that", "the", "to", "was", "will", "with", "the", "this", "but", "they", "have", "had",
-		"what", "said", "each", "which", "she", "do", "how", "their", "if", "up", "out", "many", "then", "them",
-		"these", "so", "some", "her", "would", "make", "like", "into", "him", "time", "two", "more", "go", "no",
-		"way", "could", "my", "than", "first", "been", "call", "who", "oil", "sit", "now", "find", "down", "day",
-		"did", "get", "come", "made", "may", "part", "i",
-	}
-
-	stopWordsMap := make(map[string]Empty)
-	for _, word := range stopWords {
+	stopWordsMap := make(map[string]Empty, len(EnglishStopWords))
+	for _, word := range EnglishStopWords {
 		stopWordsMap[word] = Empty{}
 	}
 

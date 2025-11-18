@@ -35,7 +35,7 @@ BLUE := \033[0;34m
 NC := \033[0m # No Color
 
 # Targets
-.PHONY: all clean test lint tidy help debug $(TARGETS)
+.PHONY: all clean test lint tidy help debug $(TARGETS) build-reduce-tools
 
 # Default target
 all: build
@@ -114,6 +114,13 @@ help:
 	@echo ""
 	@echo "For more information about a specific target, run:"
 	@echo "  make help-<target>"
+
+# Vector reduction tools
+build-reduce-tools:
+	@printf "$(BLUE)Building vector reduction tools...$(NC)\n"
+	@mkdir -p $(BIN_DIR)
+	@$(GOBUILD) -o $(BIN_DIR)/reduce_vec_size tools/reduce_vec_size.go
+	@printf "$(GREEN)Tools built successfully!$(NC)\n"
 
 # Debugging
 print-%:
