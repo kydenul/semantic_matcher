@@ -29,6 +29,7 @@ type Config struct {
 	EnableStats        bool     `mapstructure:"enable_stats"`
 	MemoryLimit        int64    `mapstructure:"memory_limit_bytes"`
 	SupportedLanguages []string `mapstructure:"supported_languages"` // ["zh", "en"]
+	DictPaths          []string `mapstructure:"dict_paths"`
 }
 
 // DefaultConfig returns a configuration with sensible defaults
@@ -41,6 +42,7 @@ func DefaultConfig() *Config {
 		EnableStats:        DefaultEnableStats,
 		MemoryLimit:        DefaultMemoryLimit,
 		SupportedLanguages: DefaultSupportedLanguages,
+		DictPaths:          []string{},
 	}
 }
 
@@ -101,6 +103,19 @@ func Validate(config *Config) error {
 
 	if len(config.SupportedLanguages) == 0 {
 		return ErrInvalidConfiguration
+	}
+
+	// Verify all dict files exist if specified
+	for _, path := range config.DictPaths {
+		if path == "" {
+			return ErrInvalidConfiguration
+		}
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				return ErrInvalidConfiguration
+			}
+			return err
+		}
 	}
 
 	return nil

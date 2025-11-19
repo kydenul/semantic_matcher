@@ -1,6 +1,8 @@
 package semanticmatcher
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -349,5 +351,300 @@ func TestTextProcessor_ConcurrentAccess(t *testing.T) {
 	// Wait for all goroutines to complete
 	for i := 0; i < 10; i++ {
 		<-done
+	}
+}
+
+func TestNewTextProcessorWithDictPaths(t *testing.T) {
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get current directory: %v", err)
+	}
+
+	// Test with valid dictionary paths
+	dictPaths := []string{
+		filepath.Join(cwd, "vector/dict/zh/t_1.txt"),
+		filepath.Join(cwd, "vector/dict/zh/s_1.txt"),
+	}
+
+	// Check if dictionary files exist
+	for _, path := range dictPaths {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Skipf("Dictionary file not found: %s, skipping test", path)
+		}
+	}
+
+	processor, err := NewTextProcessorWithDictPaths(dictPaths)
+	if err != nil {
+		t.Fatalf("Failed to create text processor with dict paths: %v", err)
+	}
+
+	if processor == nil {
+		t.Fatal("Expected non-nil processor")
+	}
+
+	// Test preprocessing with custom dictionary
+	text := "人工智能和机器学习正在改变世界"
+	tokens := processor.Preprocess(text)
+
+	if len(tokens) == 0 {
+		t.Error("Expected non-empty tokens")
+	}
+
+	t.Logf("Preprocessed tokens: %v", tokens)
+}
+
+func TestNewTextProcessorWithDictPaths_EmptyPaths(t *testing.T) {
+	processor, err := NewTextProcessorWithDictPaths([]string{})
+	if err == nil {
+		t.Error("Expected error for empty dict paths")
+	}
+
+	if processor != nil {
+		t.Error("Expected nil processor for empty dict paths")
+	}
+}
+
+func TestNewTextProcessorWithDictPaths_InvalidPath(t *testing.T) {
+	dictPaths := []string{
+		"/nonexistent/path/dict.txt",
+	}
+
+	processor, err := NewTextProcessorWithDictPaths(dictPaths)
+	if err == nil {
+		t.Error("Expected error for invalid dict path")
+	}
+
+	if processor != nil {
+		t.Error("Expected nil processor for invalid dict path")
+	}
+}
+
+func TestConfigWithDictPaths(t *testing.T) {
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get current directory: %v", err)
+	}
+
+	// Create config with dict paths
+	config := DefaultConfig()
+	config.VectorFilePaths = []string{
+		filepath.Join(cwd, "vector/wiki.zh.align.reduced.vec"),
+	}
+	config.DictPaths = []string{
+		filepath.Join(cwd, "vector/dict/zh/t_1.txt"),
+		filepath.Join(cwd, "vector/dict/zh/s_1.txt"),
+	}
+
+	// Check if files exist
+	for _, path := range config.VectorFilePaths {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Skipf("Vector file not found: %s, skipping test", path)
+		}
+	}
+	for _, path := range config.DictPaths {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Skipf("Dictionary file not found: %s, skipping test", path)
+		}
+	}
+
+	// Validate config
+	err = Validate(config)
+	if err != nil {
+		t.Fatalf("Config validation failed: %v", err)
+	}
+
+	t.Log("Config with DictPaths validated successfully")
+}
+
+func TestConfigWithInvalidDictPaths(t *testing.T) {
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get current directory: %v", err)
+	}
+
+	// Create config with invalid dict paths
+	config := DefaultConfig()
+	config.VectorFilePaths = []string{
+		filepath.Join(cwd, "vector/wiki.zh.align.reduced.vec"),
+	}
+	config.DictPaths = []string{
+		"/nonexistent/path/dict.txt",
+	}
+
+	// Validate config - should fail
+	err = Validate(config)
+	if err == nil {
+		t.Error("Expected validation error for invalid dict paths")
+	}
+}
+
+func TestNewTextProcessorWithDictPathsAndStopWords(t *testing.T) {
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get current directory: %v", err)
+	}
+
+	// Test with valid dictionary paths and stop words
+	dictPaths := []string{
+		filepath.Join(cwd, "vector/dict/zh/t_1.txt"),
+		filepath.Join(cwd, "vector/dict/zh/s_1.txt"),
+	}
+
+	chineseStopWordsPath := filepath.Join(cwd, "vector/dict/zh/stop_word.txt")
+	englishStopWordsPath := ""
+
+	// Check if files exist
+	for _, path := range dictPaths {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Skipf("Dictionary file not found: %s, skipping test", path)
+		}
+	}
+	if _, err := os.Stat(chineseStopWordsPath); os.IsNotExist(err) {
+		t.Skipf("Stop words file not found: %s, skipping test", chineseStopWordsPath)
+	}
+
+	processor, err := NewTextProcessorWithDictPathsAndStopWords(
+		dictPaths,
+		chineseStopWordsPath,
+		englishStopWordsPath,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create text processor with dict paths and stop words: %v", err)
+	}
+
+	if processor == nil {
+		t.Fatal("Expected non-nil processor")
+	}
+
+	// Test preprocessing with custom dictionary and stop words
+	text := "人工智能和机器学习正在改变世界"
+	tokens := processor.Preprocess(text)
+
+	if len(tokens) == 0 {
+		t.Error("Expected non-empty tokens")
+	}
+
+	t.Logf("Preprocessed tokens: %v", tokens)
+
+	// Verify that stop words are filtered
+	// "和" should be filtered as a stop word
+	for _, token := range tokens {
+		if token == "和" {
+			t.Error("Stop word '和' should have been filtered")
+		}
+	}
+}
+
+func TestNewTextProcessorWithDictPathsAndStopWords_EmptyDictPaths(t *testing.T) {
+	processor, err := NewTextProcessorWithDictPathsAndStopWords(
+		[]string{},
+		"",
+		"",
+	)
+	if err == nil {
+		t.Error("Expected error for empty dict paths")
+	}
+
+	if processor != nil {
+		t.Error("Expected nil processor for empty dict paths")
+	}
+}
+
+func TestConfigWithDictPathsAndStopWords(t *testing.T) {
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get current directory: %v", err)
+	}
+
+	// Create config with both dict paths and stop words
+	config := DefaultConfig()
+	config.VectorFilePaths = []string{
+		filepath.Join(cwd, "vector/wiki.zh.align.reduced.vec"),
+	}
+	config.DictPaths = []string{
+		filepath.Join(cwd, "vector/dict/zh/t_1.txt"),
+		filepath.Join(cwd, "vector/dict/zh/s_1.txt"),
+	}
+	config.ChineseStopWords = filepath.Join(cwd, "vector/dict/zh/stop_word.txt")
+
+	// Check if files exist
+	for _, path := range config.VectorFilePaths {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Skipf("Vector file not found: %s, skipping test", path)
+		}
+	}
+	for _, path := range config.DictPaths {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Skipf("Dictionary file not found: %s, skipping test", path)
+		}
+	}
+	if _, err := os.Stat(config.ChineseStopWords); os.IsNotExist(err) {
+		t.Skipf("Stop words file not found: %s, skipping test", config.ChineseStopWords)
+	}
+
+	// Validate config
+	err = Validate(config)
+	if err != nil {
+		t.Fatalf("Config validation failed: %v", err)
+	}
+
+	t.Log("Config with DictPaths and StopWords validated successfully")
+}
+
+func TestNewTextProcessorWithDictPathsAndStopWords_Comparison(t *testing.T) {
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get current directory: %v", err)
+	}
+
+	dictPaths := []string{
+		filepath.Join(cwd, "vector/dict/zh/t_1.txt"),
+		filepath.Join(cwd, "vector/dict/zh/s_1.txt"),
+	}
+
+	// Check if files exist
+	for _, path := range dictPaths {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Skipf("Dictionary file not found: %s, skipping test", path)
+		}
+	}
+
+	// Create processor with only dict paths
+	processorDictOnly, err := NewTextProcessorWithDictPaths(dictPaths)
+	if err != nil {
+		t.Fatalf("Failed to create processor with dict paths: %v", err)
+	}
+
+	// Create processor with dict paths and default stop words
+	processorWithStopWords, err := NewTextProcessorWithDictPathsAndStopWords(
+		dictPaths,
+		"", // Use default Chinese stop words
+		"", // Use default English stop words
+	)
+	if err != nil {
+		t.Fatalf("Failed to create processor with dict paths and stop words: %v", err)
+	}
+
+	// Test text with stop words
+	text := "人工智能和机器学习正在改变世界"
+
+	tokensDictOnly := processorDictOnly.Preprocess(text)
+	tokensWithStopWords := processorWithStopWords.Preprocess(text)
+
+	t.Logf("Tokens with dict only: %v", tokensDictOnly)
+	t.Logf("Tokens with dict and stop words: %v", tokensWithStopWords)
+
+	// Both should work, but may have different results due to stop word filtering
+	if len(tokensDictOnly) == 0 {
+		t.Error("Expected non-empty tokens from dict-only processor")
+	}
+	if len(tokensWithStopWords) == 0 {
+		t.Error("Expected non-empty tokens from processor with stop words")
 	}
 }

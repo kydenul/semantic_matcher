@@ -155,6 +155,87 @@ func NewTextProcessorWithStopWords(
 	return NewTextProcessorWithConfig(chineseStops, englishStops), nil
 }
 
+// NewTextProcessorWithDictPaths creates a TextProcessor with multiple custom dictionary paths
+// The dictionaries will be loaded in order, with later dictionaries taking precedence
+func NewTextProcessorWithDictPaths(dictPaths []string) (TextProcessor, error) {
+	if len(dictPaths) == 0 {
+		return nil, ErrInvalidConfiguration
+	}
+
+	processor := &textProcessor{
+		chineseStops:     defaultChineseStopWords(),
+		englishStops:     defaultEnglishStopWords(),
+		englishTokenizer: regexp.MustCompile(`\b\w+\b`),
+	}
+
+	// Initialize GSE Segmenter with external dictionary files
+	// Load dictionaries in order - later ones will override earlier ones
+	for _, dictPath := range dictPaths {
+		err := processor.seg.LoadDict(dictPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return processor, nil
+}
+
+// NewTextProcessorWithDictPathsAndStopWords creates a TextProcessor with both custom dictionaries and stop words
+// This allows full customization of both word segmentation and stop word filtering
+func NewTextProcessorWithDictPathsAndStopWords(
+	dictPaths []string,
+	chineseStopWordsPath, englishStopWordsPath string,
+) (TextProcessor, error) {
+	if len(dictPaths) == 0 {
+		return nil, ErrInvalidConfiguration
+	}
+
+	// Load stop words
+	chineseStops := defaultChineseStopWords()
+	englishStops := defaultEnglishStopWords()
+
+	// Load Chinese stop words if path is provided
+	if chineseStopWordsPath != "" {
+		customChineseStops, err := loadStopWordsFromFile(chineseStopWordsPath)
+		if err != nil {
+			return nil, err
+		}
+		// Merge with defaults
+		for word := range customChineseStops {
+			chineseStops[word] = struct{}{}
+		}
+	}
+
+	// Load English stop words if path is provided
+	if englishStopWordsPath != "" {
+		customEnglishStops, err := loadStopWordsFromFile(englishStopWordsPath)
+		if err != nil {
+			return nil, err
+		}
+		// Merge with defaults
+		for word := range customEnglishStops {
+			englishStops[word] = struct{}{}
+		}
+	}
+
+	processor := &textProcessor{
+		chineseStops:     chineseStops,
+		englishStops:     englishStops,
+		englishTokenizer: regexp.MustCompile(`\b\w+\b`),
+	}
+
+	// Initialize GSE Segmenter with external dictionary files
+	// Load dictionaries in order - later ones will override earlier ones
+	for _, dictPath := range dictPaths {
+		err := processor.seg.LoadDict(dictPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return processor, nil
+}
+
 // Preprocess segments Chinese text and filters stop words
 func (tp *textProcessor) Preprocess(text string) []string {
 	tp.mtx.RLock()

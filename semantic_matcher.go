@@ -67,11 +67,47 @@ func NewSemanticMatcherFromConfig(config *Config, logger Logger) (SemanticMatche
 		return nil, err
 	}
 
-	// Initialize text processor with stop words
+	// Initialize text processor with stop words and custom dictionaries
 	var processor TextProcessor
 	var err error
 
-	if config.ChineseStopWords != "" || config.EnglishStopWords != "" {
+	// Determine which processor to create based on configuration
+	// DictPaths and StopWords can be used together
+	hasCustomDict := len(config.DictPaths) > 0
+	hasCustomStopWords := config.ChineseStopWords != "" || config.EnglishStopWords != ""
+
+	if hasCustomDict && hasCustomStopWords {
+		// Use both custom dictionaries and custom stop words
+		logger.Infof("Loading text processor with custom dictionaries and stop words, "+
+			"dict_count: %d, dict_paths: %v, chinese_stopwords: %s, english_stopwords: %s",
+			len(config.DictPaths), config.DictPaths, config.ChineseStopWords, config.EnglishStopWords)
+		processor, err = NewTextProcessorWithDictPathsAndStopWords(
+			config.DictPaths,
+			config.ChineseStopWords,
+			config.EnglishStopWords,
+		)
+		if err != nil {
+			logger.Errorf("Failed to load custom dictionaries and stop words, using default processor, error: %v", err)
+			processor = NewTextProcessor()
+		} else {
+			logger.Infof("Custom dictionaries and stop words loaded successfully")
+		}
+	} else if hasCustomDict {
+		// Use only custom dictionary paths
+		logger.Infof("Loading text processor with custom dictionaries, dict_count: %d, paths: %v",
+			len(config.DictPaths), config.DictPaths)
+		processor, err = NewTextProcessorWithDictPaths(config.DictPaths)
+		if err != nil {
+			logger.Errorf("Failed to load custom dictionaries, using default processor, error: %v", err)
+			processor = NewTextProcessor()
+		} else {
+			logger.Infof("Custom dictionaries loaded successfully")
+		}
+	} else if hasCustomStopWords {
+		// Use only custom stop words
+		logger.Infof("Loading text processor with custom stop words, "+
+			"chinese_stopwords: %s, english_stopwords: %s",
+			config.ChineseStopWords, config.EnglishStopWords)
 		processor, err = NewTextProcessorWithStopWords(
 			config.ChineseStopWords,
 			config.EnglishStopWords,
@@ -79,8 +115,12 @@ func NewSemanticMatcherFromConfig(config *Config, logger Logger) (SemanticMatche
 		if err != nil {
 			logger.Errorf("Failed to load stop words, using default processor, error: %v", err)
 			processor = NewTextProcessor()
+		} else {
+			logger.Infof("Custom stop words loaded successfully")
 		}
 	} else {
+		// Use default processor
+		logger.Infof("Loading text processor with default configuration")
 		processor = NewTextProcessor()
 	}
 

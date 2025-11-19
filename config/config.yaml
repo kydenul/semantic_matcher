@@ -33,3 +33,6 @@ semantic_matcher:
   enable_stats: true
   memory_limit_bytes: 10737418240 # 10GB
   supported_languages: ["en", "zh"]
+  dict_paths: [
+    "/Users/kyden/git-space/semantic_matcher/vector/dict/zh/t_1.txt",
+    "/Users/kyden/git-space/semantic_matcher/vector/dict/zh/s_1.txt"]
