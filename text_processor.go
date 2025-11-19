@@ -168,7 +168,14 @@ func NewTextProcessorWithDictPaths(dictPaths []string) (TextProcessor, error) {
 		englishTokenizer: regexp.MustCompile(`\b\w+\b`),
 	}
 
-	// Initialize GSE Segmenter with external dictionary files
+	// First, load embedded dictionary to fully initialize gse's internal state
+	// This prevents gse from trying to load missing files from default paths later
+	err := processor.seg.LoadDictEmbed()
+	if err != nil {
+		return nil, err
+	}
+
+	// Then load custom dictionaries - they will override the embedded ones
 	// Load dictionaries in order - later ones will override earlier ones
 	for _, dictPath := range dictPaths {
 		err := processor.seg.LoadDict(dictPath)
@@ -224,7 +231,14 @@ func NewTextProcessorWithDictPathsAndStopWords(
 		englishTokenizer: regexp.MustCompile(`\b\w+\b`),
 	}
 
-	// Initialize GSE Segmenter with external dictionary files
+	// First, load embedded dictionary to fully initialize gse's internal state
+	// This prevents gse from trying to load missing files from default paths later
+	err := processor.seg.LoadDictEmbed()
+	if err != nil {
+		return nil, err
+	}
+
+	// Then load custom dictionaries - they will override the embedded ones
 	// Load dictionaries in order - later ones will override earlier ones
 	for _, dictPath := range dictPaths {
 		err := processor.seg.LoadDict(dictPath)
