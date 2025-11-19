@@ -78,16 +78,26 @@ func NewSemanticMatcherFromConfig(config *Config, logger Logger) (SemanticMatche
 
 	if hasCustomDict && hasCustomStopWords {
 		// Use both custom dictionaries and custom stop words
-		logger.Infof("Loading text processor with custom dictionaries and stop words, "+
-			"dict_count: %d, dict_paths: %v, chinese_stopwords: %s, english_stopwords: %s",
-			len(config.DictPaths), config.DictPaths, config.ChineseStopWords, config.EnglishStopWords)
+		logger.Infof(
+			"Loading text processor with custom dictionaries and stop words, "+
+				"dict_count: %d, dict_paths: %v, chinese_stopwords: %s, english_stopwords: %s",
+			len(
+				config.DictPaths,
+			),
+			config.DictPaths,
+			config.ChineseStopWords,
+			config.EnglishStopWords,
+		)
 		processor, err = NewTextProcessorWithDictPathsAndStopWords(
 			config.DictPaths,
 			config.ChineseStopWords,
 			config.EnglishStopWords,
 		)
 		if err != nil {
-			logger.Errorf("Failed to load custom dictionaries and stop words, using default processor, error: %v", err)
+			logger.Errorf(
+				"Failed to load custom dictionaries and stop words, using default processor, error: %v",
+				err,
+			)
 			processor = NewTextProcessor()
 		} else {
 			logger.Infof("Custom dictionaries and stop words loaded successfully")
@@ -246,7 +256,7 @@ func (sm *semanticMatcher) FindTopKeywords(
 	startTime := time.Now()
 	if paragraph == "" || len(keywords) == 0 {
 		sm.updateStats(time.Since(startTime), 0, 0)
-		sm.logger.Debugf("Empty input provided, paragraph_empty: %v, keywords_empty: %v",
+		sm.logger.Warnf("Empty input provided, paragraph_empty: %v, keywords_empty: %v",
 			paragraph == "", len(keywords) == 0)
 		return []KeywordMatch{}
 	}

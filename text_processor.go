@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/go-ego/gse"
+	"github.com/kydenul/log"
 )
 
 var (
@@ -266,13 +267,13 @@ func (tp *textProcessor) Preprocess(text string) []string {
 	var tokens []string
 
 	if hasChinese && hasEnglish {
-		// Mixed language processing
+		log.Debug("Mixed language processing")
 		tokens = tp.processMixedText(text)
 	} else if hasChinese {
-		// Pure Chinese processing
+		log.Debug("Pure Chinese processing")
 		tokens = tp.processChineseText(text)
 	} else {
-		// Pure English processing
+		log.Debug("Pure English processing")
 		tokens = tp.processEnglishText(text)
 	}
 
