@@ -38,8 +38,11 @@ type VectorModel interface {
 	// GetVectorHitRate returns the rate of successful vector lookups (0.0 to 1.0)
 	GetVectorHitRate() float64
 
-	// GetLookupStats returns detailed lookup statistics (total, oov, hit)
-	GetLookupStats() (totalLookups, oovLookups, hitLookups int64)
+	// GetLookupStats returns detailed lookup statistics (total, oov, hit, fallback attempts, successes, failures)
+	GetLookupStats() (totalLookups, oovLookups, hitLookups, fallbackAttempts, fallbackSuccesses, fallbackFailures int64)
+
+	// GetFallbackSuccessRate returns the success rate of character-level fallback operations (0.0 to 1.0)
+	GetFallbackSuccessRate() float64
 
 	// ResetStats resets all statistics counters
 	ResetStats()

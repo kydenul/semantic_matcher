@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leanovate/gopter"
+	"github.com/leanovate/gopter/gen"
+	"github.com/leanovate/gopter/prop"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -300,10 +303,10 @@ func TestVectorModel_OOVStatistics(t *testing.T) {
 	// Perform some lookups
 	vm.GetVector("word1")       // hit
 	vm.GetVector("word2")       // hit
-	vm.GetVector("nonexistent") // miss
+	vm.GetVector("nonexistent") // miss - triggers fallback
 
 	// Check statistics
-	total, oov, hit := vm.GetLookupStats()
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
 	if total != 3 {
 		t.Errorf("Expected 3 total lookups, got %d", total)
 	}
@@ -312,6 +315,15 @@ func TestVectorModel_OOVStatistics(t *testing.T) {
 	}
 	if hit != 2 {
 		t.Errorf("Expected 2 hit lookups, got %d", hit)
+	}
+	if fallbackAttempts != 1 {
+		t.Errorf("Expected 1 fallback attempt, got %d", fallbackAttempts)
+	}
+	if fallbackSuccesses != 0 {
+		t.Errorf("Expected 0 fallback successes, got %d", fallbackSuccesses)
+	}
+	if fallbackFailures != 1 {
+		t.Errorf("Expected 1 fallback failure, got %d", fallbackFailures)
 	}
 
 	// Check rates
@@ -326,9 +338,10 @@ func TestVectorModel_OOVStatistics(t *testing.T) {
 	}
 
 	// Test GetAverageVector with mixed hits and misses
+	// Note: GetAverageVector now triggers fallback for OOV words (task 4 completed)
 	vm.GetAverageVector([]string{"word1", "word2", "nonexistent1", "nonexistent2"})
 
-	total, oov, hit = vm.GetLookupStats()
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures = vm.GetLookupStats()
 	if total != 7 { // 3 previous + 4 new
 		t.Errorf("Expected 7 total lookups, got %d", total)
 	}
@@ -338,16 +351,30 @@ func TestVectorModel_OOVStatistics(t *testing.T) {
 	if hit != 4 { // 2 previous + 2 new
 		t.Errorf("Expected 4 hit lookups, got %d", hit)
 	}
+	// GetAverageVector now triggers fallback for OOV words: 1 previous + 2 new = 3 attempts
+	if fallbackAttempts != 3 {
+		t.Errorf("Expected 3 fallback attempts, got %d", fallbackAttempts)
+	}
+	if fallbackSuccesses != 0 {
+		t.Errorf("Expected 0 fallback successes, got %d", fallbackSuccesses)
+	}
+	// All fallback attempts fail because "nonexistent" words have no character vectors
+	if fallbackFailures != 3 {
+		t.Errorf("Expected 3 fallback failures, got %d", fallbackFailures)
+	}
 
 	// Test reset
 	vm.ResetStats()
-	total, oov, hit = vm.GetLookupStats()
-	if total != 0 || oov != 0 || hit != 0 {
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures = vm.GetLookupStats()
+	if total != 0 || oov != 0 || hit != 0 || fallbackAttempts != 0 || fallbackSuccesses != 0 || fallbackFailures != 0 {
 		t.Errorf(
-			"Expected all stats to be 0 after reset, got total=%d, oov=%d, hit=%d",
+			"Expected all stats to be 0 after reset, got total=%d, oov=%d, hit=%d, fallbackAttempts=%d, fallbackSuccesses=%d, fallbackFailures=%d",
 			total,
 			oov,
 			hit,
+			fallbackAttempts,
+			fallbackSuccesses,
+			fallbackFailures,
 		)
 	}
 }
@@ -365,7 +392,7 @@ func TestVectorModel_AllOOVWords(t *testing.T) {
 	}
 
 	// Check statistics
-	total, oov, hit := vm.GetLookupStats()
+	total, oov, hit, _, _, _ := vm.GetLookupStats()
 	if total != 3 {
 		t.Errorf("Expected 3 total lookups, got %d", total)
 	}
@@ -392,7 +419,7 @@ func TestVectorModel_EmptyInputValidation(t *testing.T) {
 	}
 
 	// Statistics should not be affected by empty input
-	total, _, _ := vm.GetLookupStats()
+	total, _, _, _, _, _ := vm.GetLookupStats()
 	if total != 0 {
 		t.Errorf("Expected 0 total lookups for empty input, got %d", total)
 	}
@@ -2284,5 +2311,2109 @@ func TestIntegrationExistingTestsCompatibility(t *testing.T) {
 		assert.GreaterOrEqual(t, stats.OOVRate, 0.0)
 		assert.LessOrEqual(t, stats.OOVRate, 1.0)
 		assert.Greater(t, stats.MemoryUsage, int64(0))
+	})
+}
+
+// Property-Based Tests for Character-Level Fallback
+
+// TestProperty1_OOVWordTriggersCharacterLevelFallback tests that when GetVector is called with an OOV word,
+// it triggers character-level fallback if the word has multiple characters.
+// **Feature: character-level-fallback, Property 1: OOV 词触发字符级回退**
+// **Validates: Requirements 1.1**
+func TestProperty1_OOVWordTriggersCharacterLevelFallback(t *testing.T) {
+	properties := gopter.NewProperties(nil)
+
+	properties.Property("OOV words with multiple characters trigger fallback", prop.ForAll(
+		func(numChars int, inVocabCount int) bool {
+			// Ensure we have at least 2 characters and at least one in vocabulary
+			if numChars < 2 || inVocabCount <= 0 || inVocabCount > numChars {
+				return true // Skip invalid cases
+			}
+
+			// Create a vector model with dimension 3
+			vm := NewVectorModel(3).(*vectorModel)
+
+			// Generate characters - first inVocabCount will be in vocabulary
+			chars := make([]rune, numChars)
+
+			for i := 0; i < numChars; i++ {
+				chars[i] = rune('一' + i) // Chinese characters
+
+				if i < inVocabCount {
+					// Add this character to vocabulary
+					charVec := []float32{float32(i), float32(i + 1), float32(i + 2)}
+					vm.AddVector(string(chars[i]), charVec)
+				}
+			}
+
+			// Create an OOV word from these characters
+			oovWord := string(chars)
+
+			// Reset stats to have a clean slate
+			vm.ResetStats()
+
+			// Call GetVector on the OOV word
+			result, ok := vm.GetVector(oovWord)
+
+			// Get statistics
+			total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+
+			// Verify that:
+			// 1. Total lookups is 1
+			if total != 1 {
+				return false
+			}
+
+			// 2. OOV count is 1 (word not in vocabulary)
+			if oov != 1 {
+				return false
+			}
+
+			// 3. Hit count is 0 (word not found directly)
+			if hit != 0 {
+				return false
+			}
+
+			// 4. Fallback was attempted (OOV word with multiple characters)
+			if fallbackAttempts != 1 {
+				return false
+			}
+
+			// 5. If at least one character is in vocabulary, fallback should succeed
+			if inVocabCount > 0 {
+				if !ok {
+					return false
+				}
+				if fallbackSuccesses != 1 {
+					return false
+				}
+				if fallbackFailures != 0 {
+					return false
+				}
+				if result == nil {
+					return false
+				}
+				if len(result) != 3 {
+					return false
+				}
+			} else {
+				// If no characters in vocabulary, fallback should fail
+				if ok {
+					return false
+				}
+				if fallbackSuccesses != 0 {
+					return false
+				}
+				if fallbackFailures != 1 {
+					return false
+				}
+				if result != nil {
+					return false
+				}
+			}
+
+			return true
+		},
+		gen.IntRange(2, 10), // Total characters: 2 to 10
+		gen.IntRange(1, 8),  // In-vocab characters: 1 to 8
+	))
+
+	properties.TestingRun(t, gopter.ConsoleReporter(false))
+}
+
+// TestProperty2_AllCharactersInVocabulary tests that when all characters of a word are in the vocabulary,
+// the fallback returns the complete average of all character vectors.
+// **Feature: character-level-fallback, Property 2: 所有单字都在词库时返回完整平均**
+// **Validates: Requirements 1.2**
+func TestProperty2_AllCharactersInVocabulary(t *testing.T) {
+	properties := gopter.NewProperties(nil)
+
+	properties.Property("all characters in vocabulary returns complete average", prop.ForAll(
+		func(numChars int) bool {
+			// Create a vector model with dimension 3
+			vm := NewVectorModel(3).(*vectorModel)
+
+			// Generate random character vectors and add them to the model
+			chars := make([]rune, numChars)
+			expectedSum := make([]float32, 3)
+
+			for i := 0; i < numChars; i++ {
+				// Use different Unicode characters to avoid collisions
+				chars[i] = rune('一' + i) // Chinese characters starting from U+4E00
+				charVec := []float32{float32(i), float32(i + 1), float32(i + 2)}
+				vm.AddVector(string(chars[i]), charVec)
+
+				// Accumulate expected sum
+				for j := 0; j < 3; j++ {
+					expectedSum[j] += charVec[j]
+				}
+			}
+
+			// Create a word from these characters
+			word := string(chars)
+
+			// Call characterLevelFallback
+			vm.mtx.Lock()
+			vm.fallbackAttempts++
+			result, ok := vm.characterLevelFallback(word)
+			vm.mtx.Unlock()
+
+			// Should succeed
+			if !ok {
+				return false
+			}
+
+			// Check that result is the average of all character vectors
+			expectedAvg := make([]float32, 3)
+			for j := 0; j < 3; j++ {
+				expectedAvg[j] = expectedSum[j] / float32(numChars)
+			}
+
+			// Compare with small tolerance for floating point errors
+			for j := 0; j < 3; j++ {
+				if math.Abs(float64(result[j]-expectedAvg[j])) > 1e-6 {
+					return false
+				}
+			}
+
+			return true
+		},
+		gen.IntRange(2, 10), // Test with 2 to 10 characters
+	))
+
+	properties.TestingRun(t, gopter.ConsoleReporter(false))
+}
+
+// TestProperty3_PartialCharactersInVocabulary tests that when only some characters of a word are in the vocabulary,
+// the fallback returns the average of only the characters that exist in the vocabulary.
+// **Feature: character-level-fallback, Property 3: 部分单字在词库时返回部分平均**
+// **Validates: Requirements 1.3**
+func TestProperty3_PartialCharactersInVocabulary(t *testing.T) {
+	properties := gopter.NewProperties(nil)
+
+	properties.Property("partial characters in vocabulary returns partial average", prop.ForAll(
+		func(totalChars int, inVocabCount int) bool {
+			// Ensure we have at least one character in vocab and at least one not in vocab
+			if inVocabCount <= 0 || inVocabCount >= totalChars {
+				return true // Skip invalid cases
+			}
+
+			// Create a vector model with dimension 3
+			vm := NewVectorModel(3).(*vectorModel)
+
+			// Generate characters - first inVocabCount will be in vocabulary
+			chars := make([]rune, totalChars)
+			expectedSum := make([]float32, 3)
+
+			for i := 0; i < totalChars; i++ {
+				chars[i] = rune('一' + i) // Chinese characters
+
+				if i < inVocabCount {
+					// Add this character to vocabulary
+					charVec := []float32{float32(i), float32(i + 1), float32(i + 2)}
+					vm.AddVector(string(chars[i]), charVec)
+
+					// Accumulate expected sum (only for characters in vocab)
+					for j := 0; j < 3; j++ {
+						expectedSum[j] += charVec[j]
+					}
+				}
+				// Characters at index >= inVocabCount are NOT added to vocabulary
+			}
+
+			// Create a word from these characters
+			word := string(chars)
+
+			// Call characterLevelFallback
+			vm.mtx.Lock()
+			vm.fallbackAttempts++
+			result, ok := vm.characterLevelFallback(word)
+			vm.mtx.Unlock()
+
+			// Should succeed because at least one character is in vocabulary
+			if !ok {
+				return false
+			}
+
+			// Check that result is the average of only the in-vocabulary character vectors
+			expectedAvg := make([]float32, 3)
+			for j := 0; j < 3; j++ {
+				expectedAvg[j] = expectedSum[j] / float32(inVocabCount)
+			}
+
+			// Compare with small tolerance for floating point errors
+			for j := 0; j < 3; j++ {
+				if math.Abs(float64(result[j]-expectedAvg[j])) > 1e-6 {
+					return false
+				}
+			}
+
+			return true
+		},
+		gen.IntRange(3, 10), // Total characters: 3 to 10
+		gen.IntRange(1, 8),  // In-vocab characters: 1 to 8 (will be constrained by totalChars)
+	))
+
+	properties.TestingRun(t, gopter.ConsoleReporter(false))
+}
+
+// TestProperty4_UnicodeHandling tests that the fallback correctly handles multi-byte Unicode characters
+// by using []rune for proper character splitting.
+// **Feature: character-level-fallback, Property 4: Unicode 正确处理**
+// **Validates: Requirements 2.1**
+func TestProperty4_UnicodeHandling(t *testing.T) {
+	properties := gopter.NewProperties(nil)
+
+	properties.Property("unicode characters are correctly split and processed", prop.ForAll(
+		func(numChars int) bool {
+			// Create a vector model with dimension 3
+			vm := NewVectorModel(3).(*vectorModel)
+
+			// Use various Unicode ranges to test multi-byte character handling
+			unicodeRanges := []struct {
+				start rune
+				name  string
+			}{
+				{0x4E00, "CJK Unified Ideographs"}, // Chinese
+				{0x3040, "Hiragana"},               // Japanese
+				{0x0400, "Cyrillic"},               // Russian
+				{0x0600, "Arabic"},                 // Arabic
+			}
+
+			// Pick a random range for this test
+			rangeIdx := numChars % len(unicodeRanges)
+			baseRune := unicodeRanges[rangeIdx].start
+
+			// Generate random multi-byte Unicode characters and add them to the model
+			chars := make([]rune, numChars)
+			expectedSum := make([]float32, 3)
+
+			for i := 0; i < numChars; i++ {
+				// Use characters from the selected Unicode range
+				chars[i] = baseRune + rune(i)
+				charVec := []float32{float32(i), float32(i + 1), float32(i + 2)}
+				vm.AddVector(string(chars[i]), charVec)
+
+				// Accumulate expected sum
+				for j := 0; j < 3; j++ {
+					expectedSum[j] += charVec[j]
+				}
+			}
+
+			// Create a word from these multi-byte characters
+			word := string(chars)
+
+			// Verify that the word is indeed multi-byte
+			if len(word) == len(chars) {
+				// This would mean single-byte characters, skip this case
+				return true
+			}
+
+			// Call characterLevelFallback
+			vm.mtx.Lock()
+			vm.fallbackAttempts++
+			result, ok := vm.characterLevelFallback(word)
+			vm.mtx.Unlock()
+
+			// Should succeed
+			if !ok {
+				return false
+			}
+
+			// Check that result is the average of all character vectors
+			expectedAvg := make([]float32, 3)
+			for j := 0; j < 3; j++ {
+				expectedAvg[j] = expectedSum[j] / float32(numChars)
+			}
+
+			// Compare with small tolerance for floating point errors
+			for j := 0; j < 3; j++ {
+				if math.Abs(float64(result[j]-expectedAvg[j])) > 1e-6 {
+					return false
+				}
+			}
+
+			// Verify that the number of runes matches our expectation
+			if len([]rune(word)) != numChars {
+				return false
+			}
+
+			return true
+		},
+		gen.IntRange(2, 10), // Test with 2 to 10 characters
+	))
+
+	properties.TestingRun(t, gopter.ConsoleReporter(false))
+}
+
+// TestProperty5_VectorDimensionInvariance tests that vectors generated by character-level fallback
+// have the same dimension as the original vector model.
+// **Feature: character-level-fallback, Property 5: 向量维度不变性**
+// **Validates: Requirements 2.3**
+func TestProperty5_VectorDimensionInvariance(t *testing.T) {
+	properties := gopter.NewProperties(nil)
+
+	properties.Property("fallback vectors maintain model dimension", prop.ForAll(
+		func(dimension int, numChars int) bool {
+			// Create a vector model with the specified dimension
+			vm := NewVectorModel(dimension).(*vectorModel)
+
+			// Generate random character vectors with the correct dimension
+			chars := make([]rune, numChars)
+
+			for i := 0; i < numChars; i++ {
+				chars[i] = rune('一' + i) // Chinese characters
+				charVec := make([]float32, dimension)
+				for j := 0; j < dimension; j++ {
+					charVec[j] = float32(i*dimension + j)
+				}
+				vm.AddVector(string(chars[i]), charVec)
+			}
+
+			// Create a word from these characters
+			word := string(chars)
+
+			// Call characterLevelFallback
+			vm.mtx.Lock()
+			vm.fallbackAttempts++
+			result, ok := vm.characterLevelFallback(word)
+			vm.mtx.Unlock()
+
+			// Should succeed
+			if !ok {
+				return false
+			}
+
+			// Check that result has the same dimension as the model
+			if len(result) != dimension {
+				return false
+			}
+
+			// Also verify that the model's dimension hasn't changed
+			if vm.Dimension() != dimension {
+				return false
+			}
+
+			return true
+		},
+		gen.IntRange(10, 300), // Test various dimensions from 10 to 300
+		gen.IntRange(2, 10),   // Test with 2 to 10 characters
+	))
+
+	properties.TestingRun(t, gopter.ConsoleReporter(false))
+}
+
+// TestProperty6_GetAverageVectorAutomaticFallback tests that GetAverageVector automatically
+// applies character-level fallback for OOV words in the word list.
+// **Feature: character-level-fallback, Property 6: GetAverageVector 自动回退**
+// **Validates: Requirements 3.1, 3.2**
+func TestProperty6_GetAverageVectorAutomaticFallback(t *testing.T) {
+	properties := gopter.NewProperties(nil)
+
+	properties.Property("GetAverageVector automatically applies fallback for OOV words", prop.ForAll(
+		func(numInVocab int, numOOV int, charsPerOOV int) bool {
+			// Ensure valid parameters
+			if numInVocab < 1 || numOOV < 1 || charsPerOOV < 2 {
+				return true // Skip invalid cases
+			}
+			if numInVocab > 10 || numOOV > 10 || charsPerOOV > 5 {
+				return true // Keep test cases manageable
+			}
+
+			// Create a vector model with dimension 3
+			vm := NewVectorModel(3).(*vectorModel)
+
+			// Add in-vocabulary words
+			inVocabWords := make([]string, numInVocab)
+			for i := 0; i < numInVocab; i++ {
+				word := fmt.Sprintf("word%d", i)
+				inVocabWords[i] = word
+				vec := []float32{float32(i), float32(i + 1), float32(i + 2)}
+				vm.AddVector(word, vec)
+			}
+
+			// Create OOV words with characters that exist in vocabulary
+			oovWords := make([]string, numOOV)
+			for i := 0; i < numOOV; i++ {
+				chars := make([]rune, charsPerOOV)
+				for j := 0; j < charsPerOOV; j++ {
+					char := rune('一' + i*charsPerOOV + j)
+					chars[j] = char
+
+					// Add character to vocabulary so fallback can succeed
+					charVec := []float32{float32(i*10 + j), float32(i*10 + j + 1), float32(i*10 + j + 2)}
+					vm.AddVector(string(char), charVec)
+				}
+				oovWords[i] = string(chars)
+			}
+
+			// Combine in-vocabulary and OOV words
+			allWords := append(inVocabWords, oovWords...)
+
+			// Reset stats
+			vm.ResetStats()
+
+			// Call GetAverageVector with mixed word list
+			result, ok := vm.GetAverageVector(allWords)
+
+			// Get statistics
+			total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+
+			// Verify that:
+			// 1. Result should be successful (we have valid words)
+			if !ok {
+				return false
+			}
+			if result == nil {
+				return false
+			}
+			if len(result) != 3 {
+				return false
+			}
+
+			// 2. Total lookups should equal number of words
+			if total != int64(len(allWords)) {
+				return false
+			}
+
+			// 3. Hit count should equal number of in-vocabulary words
+			if hit != int64(numInVocab) {
+				return false
+			}
+
+			// 4. OOV count should equal number of OOV words
+			if oov != int64(numOOV) {
+				return false
+			}
+
+			// 5. Fallback should be attempted for each OOV word
+			if fallbackAttempts != int64(numOOV) {
+				return false
+			}
+
+			// 6. All fallbacks should succeed (we added all characters to vocabulary)
+			if fallbackSuccesses != int64(numOOV) {
+				return false
+			}
+			if fallbackFailures != 0 {
+				return false
+			}
+
+			return true
+		},
+		gen.IntRange(1, 5), // Number of in-vocabulary words
+		gen.IntRange(1, 5), // Number of OOV words
+		gen.IntRange(2, 4), // Characters per OOV word
+	))
+
+	properties.TestingRun(t, gopter.ConsoleReporter(false))
+}
+
+// TestProperty7_MixedWordListCorrectAverage tests that GetAverageVector correctly computes
+// the average of all successfully retrieved vectors (both direct hits and fallback results).
+// **Feature: character-level-fallback, Property 7: 混合词列表正确平均**
+// **Validates: Requirements 3.3**
+func TestProperty7_MixedWordListCorrectAverage(t *testing.T) {
+	properties := gopter.NewProperties(nil)
+
+	properties.Property("Mixed word list produces correct average", prop.ForAll(
+		func(numDirectHits int, numFallbackWords int) bool {
+			// Ensure valid parameters
+			if numDirectHits < 1 || numFallbackWords < 1 {
+				return true // Skip invalid cases
+			}
+			if numDirectHits > 5 || numFallbackWords > 5 {
+				return true // Keep test cases manageable
+			}
+
+			// Create a vector model with dimension 3
+			vm := NewVectorModel(3).(*vectorModel)
+
+			// Add direct hit words with known vectors
+			directHitWords := make([]string, numDirectHits)
+			expectedSum := []float32{0, 0, 0}
+
+			for i := 0; i < numDirectHits; i++ {
+				word := fmt.Sprintf("direct%d", i)
+				directHitWords[i] = word
+				vec := []float32{float32(i * 10), float32(i*10 + 1), float32(i*10 + 2)}
+				vm.AddVector(word, vec)
+
+				// Add to expected sum
+				for j := 0; j < 3; j++ {
+					expectedSum[j] += vec[j]
+				}
+			}
+
+			// Create OOV words that will use fallback
+			fallbackWords := make([]string, numFallbackWords)
+			for i := 0; i < numFallbackWords; i++ {
+				// Create a 2-character word where both characters are in vocabulary
+				char1 := rune('甲' + i*2)
+				char2 := rune('甲' + i*2 + 1)
+
+				vec1 := []float32{float32(100 + i*10), float32(100 + i*10 + 1), float32(100 + i*10 + 2)}
+				vec2 := []float32{float32(200 + i*10), float32(200 + i*10 + 1), float32(200 + i*10 + 2)}
+
+				vm.AddVector(string(char1), vec1)
+				vm.AddVector(string(char2), vec2)
+
+				fallbackWords[i] = string([]rune{char1, char2})
+
+				// Add fallback average to expected sum
+				// Fallback computes average of char1 and char2
+				for j := 0; j < 3; j++ {
+					expectedSum[j] += (vec1[j] + vec2[j]) / 2.0
+				}
+			}
+
+			// Combine all words
+			allWords := append(directHitWords, fallbackWords...)
+			totalValidWords := numDirectHits + numFallbackWords
+
+			// Reset stats
+			vm.ResetStats()
+
+			// Call GetAverageVector
+			result, ok := vm.GetAverageVector(allWords)
+
+			// Verify result is successful
+			if !ok {
+				return false
+			}
+			if result == nil {
+				return false
+			}
+			if len(result) != 3 {
+				return false
+			}
+
+			// Compute expected average
+			expectedAvg := make([]float32, 3)
+			for i := 0; i < 3; i++ {
+				expectedAvg[i] = expectedSum[i] / float32(totalValidWords)
+			}
+
+			// Verify the result matches expected average (with floating point tolerance)
+			tolerance := float32(1e-5)
+			for i := 0; i < 3; i++ {
+				diff := result[i] - expectedAvg[i]
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff > tolerance {
+					return false
+				}
+			}
+
+			// Verify statistics
+			total, oov, hit, fallbackAttempts, fallbackSuccesses, _ := vm.GetLookupStats()
+
+			if total != int64(len(allWords)) {
+				return false
+			}
+			if hit != int64(numDirectHits) {
+				return false
+			}
+			if oov != int64(numFallbackWords) {
+				return false
+			}
+			if fallbackAttempts != int64(numFallbackWords) {
+				return false
+			}
+			if fallbackSuccesses != int64(numFallbackWords) {
+				return false
+			}
+
+			return true
+		},
+		gen.IntRange(1, 4), // Number of direct hit words
+		gen.IntRange(1, 4), // Number of fallback words
+	))
+
+	properties.TestingRun(t, gopter.ConsoleReporter(false))
+}
+
+// TestProperty8_FallbackStatisticsCorrectlyRecorded tests that all fallback operations
+// (both successful and failed) correctly update the corresponding statistics counters.
+// **Feature: character-level-fallback, Property 8: 回退统计正确记录**
+// **Validates: Requirements 4.1, 4.2, 4.3**
+func TestProperty8_FallbackStatisticsCorrectlyRecorded(t *testing.T) {
+	properties := gopter.NewProperties(nil)
+
+	properties.Property("fallback statistics are correctly recorded", prop.ForAll(
+		func(numWords int, charsPerWord int, inVocabRatio float64) bool {
+			// Validate inputs
+			if numWords < 1 || numWords > 20 || charsPerWord < 2 || charsPerWord > 10 {
+				return true // Skip invalid cases
+			}
+			if inVocabRatio < 0.0 || inVocabRatio > 1.0 {
+				return true // Skip invalid ratios
+			}
+
+			// Create a vector model with dimension 3
+			vm := NewVectorModel(3).(*vectorModel)
+
+			// Add some characters to vocabulary based on inVocabRatio
+			totalChars := 100
+			inVocabChars := int(float64(totalChars) * inVocabRatio)
+
+			for i := 0; i < inVocabChars; i++ {
+				char := string(rune('一' + i))
+				charVec := []float32{float32(i), float32(i + 1), float32(i + 2)}
+				vm.AddVector(char, charVec)
+			}
+
+			// Reset stats to have a clean slate
+			vm.ResetStats()
+
+			// Track expected statistics
+			expectedFallbackAttempts := int64(0)
+			expectedFallbackSuccesses := int64(0)
+			expectedFallbackFailures := int64(0)
+
+			// Generate and query OOV words
+			for i := 0; i < numWords; i++ {
+				// Create an OOV word with multiple characters
+				chars := make([]rune, charsPerWord)
+				hasInVocabChar := false
+
+				for j := 0; j < charsPerWord; j++ {
+					charIndex := i*charsPerWord + j
+					chars[j] = rune('一' + charIndex)
+
+					// Check if this character is in vocabulary
+					if charIndex < inVocabChars {
+						hasInVocabChar = true
+					}
+				}
+
+				oovWord := string(chars)
+
+				// Query the OOV word (should trigger fallback)
+				_, ok := vm.GetVector(oovWord)
+
+				// Update expected statistics
+				expectedFallbackAttempts++
+				if hasInVocabChar {
+					expectedFallbackSuccesses++
+					if !ok {
+						return false // Should have succeeded
+					}
+				} else {
+					expectedFallbackFailures++
+					if ok {
+						return false // Should have failed
+					}
+				}
+			}
+
+			// Get actual statistics
+			total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+
+			// Verify statistics
+			// 1. Total lookups should equal number of words
+			if total != int64(numWords) {
+				return false
+			}
+
+			// 2. All lookups should be OOV (we only queried OOV words)
+			if oov != int64(numWords) {
+				return false
+			}
+
+			// 3. No direct hits (all words are OOV)
+			if hit != 0 {
+				return false
+			}
+
+			// 4. Fallback attempts should match expected
+			if fallbackAttempts != expectedFallbackAttempts {
+				return false
+			}
+
+			// 5. Fallback successes should match expected
+			if fallbackSuccesses != expectedFallbackSuccesses {
+				return false
+			}
+
+			// 6. Fallback failures should match expected
+			if fallbackFailures != expectedFallbackFailures {
+				return false
+			}
+
+			// 7. Verify fallback success rate calculation
+			expectedRate := 0.0
+			if expectedFallbackAttempts > 0 {
+				expectedRate = float64(expectedFallbackSuccesses) / float64(expectedFallbackAttempts)
+			}
+			actualRate := vm.GetFallbackSuccessRate()
+			if math.Abs(actualRate-expectedRate) > 1e-6 {
+				return false
+			}
+
+			// 8. Verify that successes + failures = attempts
+			if fallbackSuccesses+fallbackFailures != fallbackAttempts {
+				return false
+			}
+
+			return true
+		},
+		gen.IntRange(1, 20),        // Number of words: 1 to 20
+		gen.IntRange(2, 10),        // Characters per word: 2 to 10
+		gen.Float64Range(0.0, 1.0), // In-vocab ratio: 0.0 to 1.0
+	))
+
+	properties.TestingRun(t, gopter.ConsoleReporter(false))
+}
+
+// Unit Tests for Character-Level Fallback (Task 7.1)
+
+// TestCharacterLevelFallback_OOVWord tests that OOV words trigger character-level fallback
+func TestCharacterLevelFallback_OOVWord(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add character vectors
+	vm.AddVector("没", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("事", []float32{4.0, 5.0, 6.0})
+
+	// Reset stats
+	vm.ResetStats()
+
+	// Query OOV word "没事" (not in vocabulary, but characters are)
+	result, ok := vm.GetVector("没事")
+
+	// Should succeed via fallback
+	assert.True(t, ok, "Should succeed via character-level fallback")
+	assert.NotNil(t, result, "Result should not be nil")
+	assert.Equal(t, 3, len(result), "Result should have correct dimension")
+
+	// Verify the result is the average of character vectors
+	expected := []float32{2.5, 3.5, 4.5} // (1+4)/2, (2+5)/2, (3+6)/2
+	for i := range expected {
+		assert.InDelta(t, expected[i], result[i], 1e-6, "Vector component %d should match expected average", i)
+	}
+
+	// Verify statistics
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+	assert.Equal(t, int64(1), total, "Should have 1 total lookup")
+	assert.Equal(t, int64(1), oov, "Should have 1 OOV lookup")
+	assert.Equal(t, int64(0), hit, "Should have 0 direct hits")
+	assert.Equal(t, int64(1), fallbackAttempts, "Should have 1 fallback attempt")
+	assert.Equal(t, int64(1), fallbackSuccesses, "Should have 1 fallback success")
+	assert.Equal(t, int64(0), fallbackFailures, "Should have 0 fallback failures")
+}
+
+// TestCharacterLevelFallback_SingleCharacterWord tests that single character OOV words don't trigger fallback
+func TestCharacterLevelFallback_SingleCharacterWord(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add some vectors but not the single character we'll query
+	vm.AddVector("没", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("事", []float32{4.0, 5.0, 6.0})
+
+	// Reset stats
+	vm.ResetStats()
+
+	// Query single character OOV word "好" (not in vocabulary)
+	result, ok := vm.GetVector("好")
+
+	// Should fail (single character doesn't trigger fallback)
+	assert.False(t, ok, "Single character OOV should not succeed")
+	assert.Nil(t, result, "Result should be nil")
+
+	// Verify statistics
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+	assert.Equal(t, int64(1), total, "Should have 1 total lookup")
+	assert.Equal(t, int64(1), oov, "Should have 1 OOV lookup")
+	assert.Equal(t, int64(0), hit, "Should have 0 direct hits")
+	assert.Equal(t, int64(1), fallbackAttempts, "Should have 1 fallback attempt")
+	assert.Equal(t, int64(0), fallbackSuccesses, "Should have 0 fallback successes")
+	assert.Equal(t, int64(1), fallbackFailures, "Should have 1 fallback failure")
+}
+
+// TestCharacterLevelFallback_AllCharactersInVocabulary tests fallback when all characters are in vocabulary
+func TestCharacterLevelFallback_AllCharactersInVocabulary(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add all character vectors
+	vm.AddVector("人", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("工", []float32{4.0, 5.0, 6.0})
+	vm.AddVector("智", []float32{7.0, 8.0, 9.0})
+	vm.AddVector("能", []float32{10.0, 11.0, 12.0})
+
+	// Reset stats
+	vm.ResetStats()
+
+	// Query OOV word "人工智能" (not in vocabulary, but all characters are)
+	result, ok := vm.GetVector("人工智能")
+
+	// Should succeed via fallback
+	assert.True(t, ok, "Should succeed via character-level fallback")
+	assert.NotNil(t, result, "Result should not be nil")
+
+	// Verify the result is the average of all character vectors
+	expected := []float32{5.5, 6.5, 7.5} // (1+4+7+10)/4, (2+5+8+11)/4, (3+6+9+12)/4
+	for i := range expected {
+		assert.InDelta(t, expected[i], result[i], 1e-6, "Vector component %d should match expected average", i)
+	}
+
+	// Verify statistics
+	_, _, _, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+	assert.Equal(t, int64(1), fallbackAttempts, "Should have 1 fallback attempt")
+	assert.Equal(t, int64(1), fallbackSuccesses, "Should have 1 fallback success")
+	assert.Equal(t, int64(0), fallbackFailures, "Should have 0 fallback failures")
+}
+
+// TestCharacterLevelFallback_PartialCharactersInVocabulary tests fallback when only some characters are in vocabulary
+func TestCharacterLevelFallback_PartialCharactersInVocabulary(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add only some character vectors
+	vm.AddVector("机", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("学", []float32{4.0, 5.0, 6.0})
+	// Note: "器" and "习" are NOT added
+
+	// Reset stats
+	vm.ResetStats()
+
+	// Query OOV word "机器学习" (not in vocabulary, only 2 out of 4 characters are)
+	result, ok := vm.GetVector("机器学习")
+
+	// Should succeed via fallback (at least one character is in vocabulary)
+	assert.True(t, ok, "Should succeed via character-level fallback")
+	assert.NotNil(t, result, "Result should not be nil")
+
+	// Verify the result is the average of only the in-vocabulary character vectors
+	expected := []float32{2.5, 3.5, 4.5} // (1+4)/2, (2+5)/2, (3+6)/2
+	for i := range expected {
+		assert.InDelta(t, expected[i], result[i], 1e-6, "Vector component %d should match expected average", i)
+	}
+
+	// Verify statistics
+	_, _, _, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+	assert.Equal(t, int64(1), fallbackAttempts, "Should have 1 fallback attempt")
+	assert.Equal(t, int64(1), fallbackSuccesses, "Should have 1 fallback success")
+	assert.Equal(t, int64(0), fallbackFailures, "Should have 0 fallback failures")
+}
+
+// TestCharacterLevelFallback_NoCharactersInVocabulary tests fallback when no characters are in vocabulary
+func TestCharacterLevelFallback_NoCharactersInVocabulary(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add some vectors but not the characters we'll query
+	vm.AddVector("人", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("工", []float32{4.0, 5.0, 6.0})
+
+	// Reset stats
+	vm.ResetStats()
+
+	// Query OOV word "未知词" (not in vocabulary, and no characters are either)
+	result, ok := vm.GetVector("未知词")
+
+	// Should fail (no characters in vocabulary)
+	assert.False(t, ok, "Should fail when no characters are in vocabulary")
+	assert.Nil(t, result, "Result should be nil")
+
+	// Verify statistics
+	_, _, _, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+	assert.Equal(t, int64(1), fallbackAttempts, "Should have 1 fallback attempt")
+	assert.Equal(t, int64(0), fallbackSuccesses, "Should have 0 fallback successes")
+	assert.Equal(t, int64(1), fallbackFailures, "Should have 1 fallback failure")
+}
+
+// Unit Tests for Unicode Handling (Task 7.2)
+
+// TestUnicodeHandling_MultiByteChineseCharacters tests correct splitting of multi-byte Chinese characters
+func TestUnicodeHandling_MultiByteChineseCharacters(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add multi-byte Chinese character vectors
+	// These are 3-byte UTF-8 characters
+	vm.AddVector("你", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("好", []float32{4.0, 5.0, 6.0})
+	vm.AddVector("吗", []float32{7.0, 8.0, 9.0})
+
+	// Reset stats
+	vm.ResetStats()
+
+	// Query OOV word "你好吗" (3 multi-byte characters)
+	result, ok := vm.GetVector("你好吗")
+
+	// Should succeed via fallback
+	assert.True(t, ok, "Should succeed via character-level fallback")
+	assert.NotNil(t, result, "Result should not be nil")
+
+	// Verify the result is the average of all character vectors
+	expected := []float32{4.0, 5.0, 6.0} // (1+4+7)/3, (2+5+8)/3, (3+6+9)/3
+	for i := range expected {
+		assert.InDelta(t, expected[i], result[i], 1e-6, "Vector component %d should match expected average", i)
+	}
+
+	// Verify that the word is indeed multi-byte
+	wordBytes := []byte("你好吗")
+	wordRunes := []rune("你好吗")
+	assert.Greater(t, len(wordBytes), len(wordRunes), "Multi-byte characters should have more bytes than runes")
+	assert.Equal(t, 3, len(wordRunes), "Should have exactly 3 runes")
+	assert.Equal(t, 9, len(wordBytes), "Should have 9 bytes (3 chars × 3 bytes each)")
+}
+
+// TestUnicodeHandling_MixedChineseEnglish tests handling of mixed Chinese and English words
+func TestUnicodeHandling_MixedChineseEnglish(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add character vectors for both Chinese and English characters
+	vm.AddVector("A", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("I", []float32{4.0, 5.0, 6.0})
+	vm.AddVector("人", []float32{7.0, 8.0, 9.0})
+	vm.AddVector("工", []float32{10.0, 11.0, 12.0})
+
+	// Reset stats
+	vm.ResetStats()
+
+	// Query OOV word "AI人工" (mixed English and Chinese)
+	result, ok := vm.GetVector("AI人工")
+
+	// Should succeed via fallback
+	assert.True(t, ok, "Should succeed via character-level fallback")
+	assert.NotNil(t, result, "Result should not be nil")
+
+	// Verify the result is the average of all character vectors
+	expected := []float32{5.5, 6.5, 7.5} // (1+4+7+10)/4, (2+5+8+11)/4, (3+6+9+12)/4
+	for i := range expected {
+		assert.InDelta(t, expected[i], result[i], 1e-6, "Vector component %d should match expected average", i)
+	}
+
+	// Verify correct character count
+	wordRunes := []rune("AI人工")
+	assert.Equal(t, 4, len(wordRunes), "Should have exactly 4 characters")
+}
+
+// TestUnicodeHandling_SpecialUnicodeCharacters tests handling of special Unicode characters
+func TestUnicodeHandling_SpecialUnicodeCharacters(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add vectors for various Unicode ranges
+	// Emoji (4-byte UTF-8)
+	vm.AddVector("😀", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("😊", []float32{4.0, 5.0, 6.0})
+
+	// Japanese Hiragana (3-byte UTF-8)
+	vm.AddVector("あ", []float32{7.0, 8.0, 9.0})
+	vm.AddVector("い", []float32{10.0, 11.0, 12.0})
+
+	// Cyrillic (2-byte UTF-8)
+	vm.AddVector("А", []float32{13.0, 14.0, 15.0})
+	vm.AddVector("Б", []float32{16.0, 17.0, 18.0})
+
+	testCases := []struct {
+		name     string
+		word     string
+		expected []float32
+	}{
+		{
+			name:     "Emoji",
+			word:     "😀😊",
+			expected: []float32{2.5, 3.5, 4.5}, // (1+4)/2, (2+5)/2, (3+6)/2
+		},
+		{
+			name:     "Japanese Hiragana",
+			word:     "あい",
+			expected: []float32{8.5, 9.5, 10.5}, // (7+10)/2, (8+11)/2, (9+12)/2
+		},
+		{
+			name:     "Cyrillic",
+			word:     "АБ",
+			expected: []float32{14.5, 15.5, 16.5}, // (13+16)/2, (14+17)/2, (15+18)/2
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reset stats for each test
+			vm.ResetStats()
+
+			// Query OOV word
+			result, ok := vm.GetVector(tc.word)
+
+			// Should succeed via fallback
+			assert.True(t, ok, "Should succeed via character-level fallback")
+			assert.NotNil(t, result, "Result should not be nil")
+
+			// Verify the result
+			for i := range tc.expected {
+				assert.InDelta(t, tc.expected[i], result[i], 1e-6, "Vector component %d should match expected average", i)
+			}
+
+			// Verify correct rune count
+			wordRunes := []rune(tc.word)
+			assert.Equal(t, 2, len(wordRunes), "Should have exactly 2 characters")
+		})
+	}
+}
+
+// TestUnicodeHandling_ComplexMixedScript tests handling of complex mixed-script words
+func TestUnicodeHandling_ComplexMixedScript(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add vectors for various scripts
+	vm.AddVector("中", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("A", []float32{4.0, 5.0, 6.0})
+	vm.AddVector("あ", []float32{7.0, 8.0, 9.0})
+	vm.AddVector("1", []float32{10.0, 11.0, 12.0})
+	vm.AddVector("😀", []float32{13.0, 14.0, 15.0})
+
+	// Reset stats
+	vm.ResetStats()
+
+	// Query OOV word with mixed scripts: Chinese + English + Japanese + Number + Emoji
+	result, ok := vm.GetVector("中Aあ1😀")
+
+	// Should succeed via fallback
+	assert.True(t, ok, "Should succeed via character-level fallback")
+	assert.NotNil(t, result, "Result should not be nil")
+
+	// Verify the result is the average of all character vectors
+	expected := []float32{7.0, 8.0, 9.0} // (1+4+7+10+13)/5, (2+5+8+11+14)/5, (3+6+9+12+15)/5
+	for i := range expected {
+		assert.InDelta(t, expected[i], result[i], 1e-6, "Vector component %d should match expected average", i)
+	}
+
+	// Verify correct character count
+	wordRunes := []rune("中Aあ1😀")
+	assert.Equal(t, 5, len(wordRunes), "Should have exactly 5 characters")
+
+	// Verify byte count is much larger than rune count (multi-byte characters)
+	wordBytes := []byte("中Aあ1😀")
+	assert.Greater(t, len(wordBytes), len(wordRunes), "Multi-byte characters should have more bytes than runes")
+}
+
+// TestUnicodeHandling_SurrogatePairs tests handling of Unicode surrogate pairs (4-byte UTF-8)
+func TestUnicodeHandling_SurrogatePairs(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add vectors for characters that require surrogate pairs in UTF-16 (4-byte UTF-8)
+	// These are characters outside the Basic Multilingual Plane (BMP)
+	vm.AddVector("𝐀", []float32{1.0, 2.0, 3.0})    // Mathematical Bold Capital A (U+1D400)
+	vm.AddVector("𝐁", []float32{4.0, 5.0, 6.0})    // Mathematical Bold Capital B (U+1D401)
+	vm.AddVector("🀀", []float32{7.0, 8.0, 9.0})    // Mahjong Tile East Wind (U+1F000)
+	vm.AddVector("🀁", []float32{10.0, 11.0, 12.0}) // Mahjong Tile South Wind (U+1F001)
+
+	// Reset stats
+	vm.ResetStats()
+
+	// Query OOV word with 4-byte UTF-8 characters
+	result, ok := vm.GetVector("𝐀𝐁🀀🀁")
+
+	// Should succeed via fallback
+	assert.True(t, ok, "Should succeed via character-level fallback")
+	assert.NotNil(t, result, "Result should not be nil")
+
+	// Verify the result is the average of all character vectors
+	expected := []float32{5.5, 6.5, 7.5} // (1+4+7+10)/4, (2+5+8+11)/4, (3+6+9+12)/4
+	for i := range expected {
+		assert.InDelta(t, expected[i], result[i], 1e-6, "Vector component %d should match expected average", i)
+	}
+
+	// Verify correct character count
+	wordRunes := []rune("𝐀𝐁🀀🀁")
+	assert.Equal(t, 4, len(wordRunes), "Should have exactly 4 characters")
+
+	// Verify byte count (each character is 4 bytes in UTF-8)
+	wordBytes := []byte("𝐀𝐁🀀🀁")
+	assert.Equal(t, 16, len(wordBytes), "Should have 16 bytes (4 chars × 4 bytes each)")
+}
+
+// Unit Tests for Statistics Functionality (Task 7.3)
+
+// TestStatistics_FallbackCountersCorrectlyUpdated tests that fallback counters are correctly updated
+func TestStatistics_FallbackCountersCorrectlyUpdated(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add character vectors
+	vm.AddVector("成", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("功", []float32{4.0, 5.0, 6.0})
+
+	// Reset stats to start fresh
+	vm.ResetStats()
+
+	// Scenario 1: Successful fallback
+	result1, ok1 := vm.GetVector("成功") // OOV word with characters in vocabulary
+	assert.True(t, ok1, "First fallback should succeed")
+	assert.NotNil(t, result1, "First result should not be nil")
+
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+	assert.Equal(t, int64(1), total, "Should have 1 total lookup")
+	assert.Equal(t, int64(1), oov, "Should have 1 OOV lookup")
+	assert.Equal(t, int64(0), hit, "Should have 0 direct hits")
+	assert.Equal(t, int64(1), fallbackAttempts, "Should have 1 fallback attempt")
+	assert.Equal(t, int64(1), fallbackSuccesses, "Should have 1 fallback success")
+	assert.Equal(t, int64(0), fallbackFailures, "Should have 0 fallback failures")
+
+	// Scenario 2: Failed fallback (no characters in vocabulary)
+	result2, ok2 := vm.GetVector("失败") // OOV word with no characters in vocabulary
+	assert.False(t, ok2, "Second fallback should fail")
+	assert.Nil(t, result2, "Second result should be nil")
+
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures = vm.GetLookupStats()
+	assert.Equal(t, int64(2), total, "Should have 2 total lookups")
+	assert.Equal(t, int64(2), oov, "Should have 2 OOV lookups")
+	assert.Equal(t, int64(0), hit, "Should have 0 direct hits")
+	assert.Equal(t, int64(2), fallbackAttempts, "Should have 2 fallback attempts")
+	assert.Equal(t, int64(1), fallbackSuccesses, "Should have 1 fallback success")
+	assert.Equal(t, int64(1), fallbackFailures, "Should have 1 fallback failure")
+
+	// Scenario 3: Direct hit (no fallback)
+	result3, ok3 := vm.GetVector("成") // Character in vocabulary
+	assert.True(t, ok3, "Direct hit should succeed")
+	assert.NotNil(t, result3, "Third result should not be nil")
+
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures = vm.GetLookupStats()
+	assert.Equal(t, int64(3), total, "Should have 3 total lookups")
+	assert.Equal(t, int64(2), oov, "Should have 2 OOV lookups")
+	assert.Equal(t, int64(1), hit, "Should have 1 direct hit")
+	assert.Equal(t, int64(2), fallbackAttempts, "Should still have 2 fallback attempts")
+	assert.Equal(t, int64(1), fallbackSuccesses, "Should still have 1 fallback success")
+	assert.Equal(t, int64(1), fallbackFailures, "Should still have 1 fallback failure")
+
+	// Scenario 4: Multiple successful fallbacks
+	result4, ok4 := vm.GetVector("功成") // Another OOV word with characters in vocabulary
+	assert.True(t, ok4, "Fourth fallback should succeed")
+	assert.NotNil(t, result4, "Fourth result should not be nil")
+
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures = vm.GetLookupStats()
+	assert.Equal(t, int64(4), total, "Should have 4 total lookups")
+	assert.Equal(t, int64(3), oov, "Should have 3 OOV lookups")
+	assert.Equal(t, int64(1), hit, "Should have 1 direct hit")
+	assert.Equal(t, int64(3), fallbackAttempts, "Should have 3 fallback attempts")
+	assert.Equal(t, int64(2), fallbackSuccesses, "Should have 2 fallback successes")
+	assert.Equal(t, int64(1), fallbackFailures, "Should have 1 fallback failure")
+}
+
+// TestStatistics_QueryReturnsCorrectValues tests that statistics query returns correct values
+func TestStatistics_QueryReturnsCorrectValues(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add test vectors
+	vm.AddVector("测", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("试", []float32{4.0, 5.0, 6.0})
+	vm.AddVector("word", []float32{7.0, 8.0, 9.0})
+
+	// Reset stats
+	vm.ResetStats()
+
+	// Perform various operations
+	vm.GetVector("测试")   // OOV with successful fallback
+	vm.GetVector("word") // Direct hit
+	vm.GetVector("未知")   // OOV with failed fallback
+	vm.GetVector("测")    // Direct hit
+	vm.GetVector("试测")   // OOV with successful fallback
+
+	// Query statistics using GetLookupStats
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+
+	// Verify all values
+	assert.Equal(t, int64(5), total, "Total lookups should be 5")
+	assert.Equal(t, int64(3), oov, "OOV lookups should be 3")
+	assert.Equal(t, int64(2), hit, "Hit lookups should be 2")
+	assert.Equal(t, int64(3), fallbackAttempts, "Fallback attempts should be 3")
+	assert.Equal(t, int64(2), fallbackSuccesses, "Fallback successes should be 2")
+	assert.Equal(t, int64(1), fallbackFailures, "Fallback failures should be 1")
+
+	// Verify OOV rate
+	expectedOOVRate := 3.0 / 5.0
+	actualOOVRate := vm.GetOOVRate()
+	assert.InDelta(t, expectedOOVRate, actualOOVRate, 1e-6, "OOV rate should be correct")
+
+	// Verify hit rate
+	expectedHitRate := 2.0 / 5.0
+	actualHitRate := vm.GetVectorHitRate()
+	assert.InDelta(t, expectedHitRate, actualHitRate, 1e-6, "Hit rate should be correct")
+
+	// Verify fallback success rate
+	expectedFallbackRate := 2.0 / 3.0
+	actualFallbackRate := vm.GetFallbackSuccessRate()
+	assert.InDelta(t, expectedFallbackRate, actualFallbackRate, 1e-6, "Fallback success rate should be correct")
+}
+
+// TestStatistics_FallbackSuccessRateCalculation tests the fallback success rate calculation
+func TestStatistics_FallbackSuccessRateCalculation(t *testing.T) {
+	testCases := []struct {
+		name                      string
+		setupFunc                 func(*vectorModel)
+		expectedFallbackRate      float64
+		expectedFallbackAttempts  int64
+		expectedFallbackSuccesses int64
+		expectedFallbackFailures  int64
+	}{
+		{
+			name: "100% success rate",
+			setupFunc: func(vm *vectorModel) {
+				vm.AddVector("好", []float32{1.0, 2.0, 3.0})
+				vm.AddVector("的", []float32{4.0, 5.0, 6.0})
+				vm.ResetStats()
+				vm.GetVector("好的") // Successful fallback
+				vm.GetVector("的好") // Successful fallback
+			},
+			expectedFallbackRate:      1.0,
+			expectedFallbackAttempts:  2,
+			expectedFallbackSuccesses: 2,
+			expectedFallbackFailures:  0,
+		},
+		{
+			name: "0% success rate",
+			setupFunc: func(vm *vectorModel) {
+				vm.AddVector("好", []float32{1.0, 2.0, 3.0})
+				vm.ResetStats()
+				vm.GetVector("未知") // Failed fallback
+				vm.GetVector("失败") // Failed fallback
+			},
+			expectedFallbackRate:      0.0,
+			expectedFallbackAttempts:  2,
+			expectedFallbackSuccesses: 0,
+			expectedFallbackFailures:  2,
+		},
+		{
+			name: "50% success rate",
+			setupFunc: func(vm *vectorModel) {
+				vm.AddVector("成", []float32{1.0, 2.0, 3.0})
+				vm.AddVector("功", []float32{4.0, 5.0, 6.0})
+				vm.ResetStats()
+				vm.GetVector("成功") // Successful fallback
+				vm.GetVector("失败") // Failed fallback
+			},
+			expectedFallbackRate:      0.5,
+			expectedFallbackAttempts:  2,
+			expectedFallbackSuccesses: 1,
+			expectedFallbackFailures:  1,
+		},
+		{
+			name: "No fallback attempts",
+			setupFunc: func(vm *vectorModel) {
+				vm.AddVector("word", []float32{1.0, 2.0, 3.0})
+				vm.ResetStats()
+				vm.GetVector("word") // Direct hit, no fallback
+			},
+			expectedFallbackRate:      0.0,
+			expectedFallbackAttempts:  0,
+			expectedFallbackSuccesses: 0,
+			expectedFallbackFailures:  0,
+		},
+		{
+			name: "Mixed operations with 75% success rate",
+			setupFunc: func(vm *vectorModel) {
+				vm.AddVector("一", []float32{1.0, 2.0, 3.0})
+				vm.AddVector("二", []float32{4.0, 5.0, 6.0})
+				vm.AddVector("三", []float32{7.0, 8.0, 9.0})
+				vm.ResetStats()
+				vm.GetVector("一二") // Successful fallback
+				vm.GetVector("二三") // Successful fallback
+				vm.GetVector("三一") // Successful fallback
+				vm.GetVector("未知") // Failed fallback
+			},
+			expectedFallbackRate:      0.75,
+			expectedFallbackAttempts:  4,
+			expectedFallbackSuccesses: 3,
+			expectedFallbackFailures:  1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := NewVectorModel(3).(*vectorModel)
+			tc.setupFunc(vm)
+
+			// Get fallback success rate
+			actualRate := vm.GetFallbackSuccessRate()
+			assert.InDelta(t, tc.expectedFallbackRate, actualRate, 1e-6, "Fallback success rate should match expected")
+
+			// Verify detailed statistics
+			_, _, _, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+			assert.Equal(t, tc.expectedFallbackAttempts, fallbackAttempts, "Fallback attempts should match expected")
+			assert.Equal(t, tc.expectedFallbackSuccesses, fallbackSuccesses, "Fallback successes should match expected")
+			assert.Equal(t, tc.expectedFallbackFailures, fallbackFailures, "Fallback failures should match expected")
+
+			// Verify that successes + failures = attempts
+			assert.Equal(t, fallbackAttempts, fallbackSuccesses+fallbackFailures, "Successes + failures should equal attempts")
+		})
+	}
+}
+
+// TestStatistics_ResetStats tests that ResetStats correctly resets all counters
+func TestStatistics_ResetStats(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add test vectors
+	vm.AddVector("重", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("置", []float32{4.0, 5.0, 6.0})
+
+	// Perform some operations to accumulate statistics
+	vm.GetVector("重置") // OOV with successful fallback
+	vm.GetVector("重")  // Direct hit
+	vm.GetVector("未知") // OOV with failed fallback
+
+	// Verify statistics are non-zero
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+	assert.Greater(t, total, int64(0), "Total should be > 0 before reset")
+	assert.Greater(t, oov, int64(0), "OOV should be > 0 before reset")
+	assert.Greater(t, hit, int64(0), "Hit should be > 0 before reset")
+	assert.Greater(t, fallbackAttempts, int64(0), "Fallback attempts should be > 0 before reset")
+	assert.Greater(t, fallbackSuccesses, int64(0), "Fallback successes should be > 0 before reset")
+	assert.Greater(t, fallbackFailures, int64(0), "Fallback failures should be > 0 before reset")
+
+	// Reset statistics
+	vm.ResetStats()
+
+	// Verify all statistics are zero
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures = vm.GetLookupStats()
+	assert.Equal(t, int64(0), total, "Total should be 0 after reset")
+	assert.Equal(t, int64(0), oov, "OOV should be 0 after reset")
+	assert.Equal(t, int64(0), hit, "Hit should be 0 after reset")
+	assert.Equal(t, int64(0), fallbackAttempts, "Fallback attempts should be 0 after reset")
+	assert.Equal(t, int64(0), fallbackSuccesses, "Fallback successes should be 0 after reset")
+	assert.Equal(t, int64(0), fallbackFailures, "Fallback failures should be 0 after reset")
+
+	// Verify rates are zero
+	assert.Equal(t, 0.0, vm.GetOOVRate(), "OOV rate should be 0 after reset")
+	assert.Equal(t, 0.0, vm.GetVectorHitRate(), "Hit rate should be 0 after reset")
+	assert.Equal(t, 0.0, vm.GetFallbackSuccessRate(), "Fallback success rate should be 0 after reset")
+
+	// Perform new operations after reset
+	vm.GetVector("重置") // OOV with successful fallback
+
+	// Verify statistics are updated correctly after reset
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures = vm.GetLookupStats()
+	assert.Equal(t, int64(1), total, "Total should be 1 after reset and new operation")
+	assert.Equal(t, int64(1), oov, "OOV should be 1 after reset and new operation")
+	assert.Equal(t, int64(0), hit, "Hit should be 0 after reset and new operation")
+	assert.Equal(t, int64(1), fallbackAttempts, "Fallback attempts should be 1 after reset and new operation")
+	assert.Equal(t, int64(1), fallbackSuccesses, "Fallback successes should be 1 after reset and new operation")
+	assert.Equal(t, int64(0), fallbackFailures, "Fallback failures should be 0 after reset and new operation")
+}
+
+// TestStatistics_GetAverageVectorStatistics tests that GetAverageVector correctly updates statistics
+func TestStatistics_GetAverageVectorStatistics(t *testing.T) {
+	vm := NewVectorModel(3).(*vectorModel)
+
+	// Add test vectors
+	vm.AddVector("平", []float32{1.0, 2.0, 3.0})
+	vm.AddVector("均", []float32{4.0, 5.0, 6.0})
+	vm.AddVector("word", []float32{7.0, 8.0, 9.0})
+
+	// Reset stats
+	vm.ResetStats()
+
+	// Call GetAverageVector with mixed words
+	words := []string{
+		"word", // Direct hit
+		"平均",   // OOV with successful fallback
+		"未知",   // OOV with failed fallback
+		"均平",   // OOV with successful fallback
+	}
+
+	result, ok := vm.GetAverageVector(words)
+	assert.True(t, ok, "GetAverageVector should succeed")
+	assert.NotNil(t, result, "Result should not be nil")
+
+	// Verify statistics
+	total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+	assert.Equal(t, int64(4), total, "Total lookups should be 4")
+	assert.Equal(t, int64(3), oov, "OOV lookups should be 3")
+	assert.Equal(t, int64(1), hit, "Hit lookups should be 1")
+	assert.Equal(t, int64(3), fallbackAttempts, "Fallback attempts should be 3")
+	assert.Equal(t, int64(2), fallbackSuccesses, "Fallback successes should be 2")
+	assert.Equal(t, int64(1), fallbackFailures, "Fallback failures should be 1")
+
+	// Verify rates
+	expectedOOVRate := 3.0 / 4.0
+	assert.InDelta(t, expectedOOVRate, vm.GetOOVRate(), 1e-6, "OOV rate should be correct")
+
+	expectedHitRate := 1.0 / 4.0
+	assert.InDelta(t, expectedHitRate, vm.GetVectorHitRate(), 1e-6, "Hit rate should be correct")
+
+	expectedFallbackRate := 2.0 / 3.0
+	assert.InDelta(t, expectedFallbackRate, vm.GetFallbackSuccessRate(), 1e-6, "Fallback success rate should be correct")
+}
+
+// TestStatistics_EdgeCases tests edge cases in statistics calculation
+func TestStatistics_EdgeCases(t *testing.T) {
+	t.Run("Division by zero - no lookups", func(t *testing.T) {
+		vm := NewVectorModel(3).(*vectorModel)
+		vm.ResetStats()
+
+		// With no lookups, all rates should be 0
+		assert.Equal(t, 0.0, vm.GetOOVRate(), "OOV rate should be 0 with no lookups")
+		assert.Equal(t, 0.0, vm.GetVectorHitRate(), "Hit rate should be 0 with no lookups")
+		assert.Equal(t, 0.0, vm.GetFallbackSuccessRate(), "Fallback success rate should be 0 with no fallback attempts")
+	})
+
+	t.Run("Division by zero - no fallback attempts", func(t *testing.T) {
+		vm := NewVectorModel(3).(*vectorModel)
+		vm.AddVector("word", []float32{1.0, 2.0, 3.0})
+		vm.ResetStats()
+
+		// Only direct hits, no fallback attempts
+		vm.GetVector("word")
+
+		assert.Equal(t, 0.0, vm.GetFallbackSuccessRate(), "Fallback success rate should be 0 with no fallback attempts")
+	})
+
+	t.Run("All operations are OOV", func(t *testing.T) {
+		vm := NewVectorModel(3).(*vectorModel)
+		vm.AddVector("好", []float32{1.0, 2.0, 3.0})
+		vm.ResetStats()
+
+		vm.GetVector("未知1")
+		vm.GetVector("未知2")
+		vm.GetVector("未知3")
+
+		assert.Equal(t, 1.0, vm.GetOOVRate(), "OOV rate should be 1.0 when all lookups are OOV")
+		assert.Equal(t, 0.0, vm.GetVectorHitRate(), "Hit rate should be 0.0 when all lookups are OOV")
+	})
+
+	t.Run("All operations are direct hits", func(t *testing.T) {
+		vm := NewVectorModel(3).(*vectorModel)
+		vm.AddVector("word1", []float32{1.0, 2.0, 3.0})
+		vm.AddVector("word2", []float32{4.0, 5.0, 6.0})
+		vm.ResetStats()
+
+		vm.GetVector("word1")
+		vm.GetVector("word2")
+
+		assert.Equal(t, 0.0, vm.GetOOVRate(), "OOV rate should be 0.0 when all lookups are hits")
+		assert.Equal(t, 1.0, vm.GetVectorHitRate(), "Hit rate should be 1.0 when all lookups are hits")
+		assert.Equal(t, 0.0, vm.GetFallbackSuccessRate(), "Fallback success rate should be 0.0 with no fallback attempts")
+	})
+
+	t.Run("Single character OOV doesn't affect fallback success rate", func(t *testing.T) {
+		vm := NewVectorModel(3).(*vectorModel)
+		vm.ResetStats()
+
+		// Single character OOV triggers fallback attempt but fails
+		vm.GetVector("X")
+
+		_, _, _, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+		assert.Equal(t, int64(1), fallbackAttempts, "Should have 1 fallback attempt")
+		assert.Equal(t, int64(0), fallbackSuccesses, "Should have 0 fallback successes")
+		assert.Equal(t, int64(1), fallbackFailures, "Should have 1 fallback failure")
+		assert.Equal(t, 0.0, vm.GetFallbackSuccessRate(), "Fallback success rate should be 0.0")
+	})
+}
+
+// TestProperty9_ConcurrentSafety tests that concurrent calls to GetVector and GetAverageVector
+// with character-level fallback do not produce data races.
+// **Feature: character-level-fallback, Property 9: 并发安全性**
+// **Validates: Requirements 5.1, 5.2, 5.3, 5.4**
+func TestProperty9_ConcurrentSafety(t *testing.T) {
+	properties := gopter.NewProperties(nil)
+
+	properties.Property("concurrent GetVector and GetAverageVector calls are thread-safe", prop.ForAll(
+		func(numGoroutines int, numOperations int, numCharsInVocab int) bool {
+			// Validate inputs
+			if numGoroutines < 2 || numGoroutines > 50 {
+				return true // Skip invalid test cases
+			}
+			if numOperations < 5 || numOperations > 100 {
+				return true // Skip invalid test cases
+			}
+			if numCharsInVocab < 5 || numCharsInVocab > 50 {
+				return true // Skip invalid test cases
+			}
+
+			// Create a vector model with dimension 10
+			vm := NewVectorModel(10).(*vectorModel)
+
+			// Add some single characters to vocabulary (for fallback to work)
+			for i := 0; i < numCharsInVocab; i++ {
+				char := string(rune('a' + i))
+				vector := make([]float32, 10)
+				for j := 0; j < 10; j++ {
+					vector[j] = float32(i*10 + j)
+				}
+				vm.AddVector(char, vector)
+			}
+
+			// Add some multi-character words to vocabulary (for direct hits)
+			for i := 0; i < 10; i++ {
+				word := fmt.Sprintf("word%d", i)
+				vector := make([]float32, 10)
+				for j := 0; j < 10; j++ {
+					vector[j] = float32(i*100 + j)
+				}
+				vm.AddVector(word, vector)
+			}
+
+			// Create a wait group for synchronization
+			var wg sync.WaitGroup
+			wg.Add(numGoroutines)
+
+			// Channel to collect any errors
+			errors := make(chan error, numGoroutines*numOperations)
+
+			// Launch concurrent goroutines
+			for g := 0; g < numGoroutines; g++ {
+				go func(goroutineID int) {
+					defer wg.Done()
+
+					for op := 0; op < numOperations; op++ {
+						// Alternate between different operations
+						switch op % 5 {
+						case 0:
+							// Test GetVector with OOV word (triggers fallback)
+							oovWord := fmt.Sprintf("oov%d%d", goroutineID, op)
+							vec, found := vm.GetVector(oovWord)
+							if found && len(vec) != 10 {
+								errors <- fmt.Errorf("goroutine %d: GetVector returned wrong dimension: %d", goroutineID, len(vec))
+							}
+
+						case 1:
+							// Test GetVector with existing word (direct hit)
+							word := fmt.Sprintf("word%d", op%10)
+							vec, found := vm.GetVector(word)
+							if !found {
+								errors <- fmt.Errorf("goroutine %d: GetVector failed to find existing word: %s", goroutineID, word)
+							}
+							if found && len(vec) != 10 {
+								errors <- fmt.Errorf("goroutine %d: GetVector returned wrong dimension: %d", goroutineID, len(vec))
+							}
+
+						case 2:
+							// Test GetAverageVector with mixed words (some OOV, some in vocab)
+							words := []string{
+								fmt.Sprintf("word%d", op%10),
+								fmt.Sprintf("oov%d%d", goroutineID, op),
+								fmt.Sprintf("word%d", (op+1)%10),
+							}
+							vec, found := vm.GetAverageVector(words)
+							if found && len(vec) != 10 {
+								errors <- fmt.Errorf("goroutine %d: GetAverageVector returned wrong dimension: %d", goroutineID, len(vec))
+							}
+
+						case 3:
+							// Test GetAverageVector with all OOV words
+							words := []string{
+								fmt.Sprintf("oov%d%da", goroutineID, op),
+								fmt.Sprintf("oov%d%db", goroutineID, op),
+							}
+							vec, found := vm.GetAverageVector(words)
+							if found && len(vec) != 10 {
+								errors <- fmt.Errorf("goroutine %d: GetAverageVector returned wrong dimension: %d", goroutineID, len(vec))
+							}
+
+						case 4:
+							// Test statistics queries
+							total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+							if total < 0 || oov < 0 || hit < 0 || fallbackAttempts < 0 || fallbackSuccesses < 0 || fallbackFailures < 0 {
+								errors <- fmt.Errorf("goroutine %d: negative statistics values", goroutineID)
+							}
+							if total < oov+hit {
+								errors <- fmt.Errorf("goroutine %d: inconsistent statistics: total=%d, oov=%d, hit=%d", goroutineID, total, oov, hit)
+							}
+						}
+					}
+				}(g)
+			}
+
+			// Wait for all goroutines to complete
+			wg.Wait()
+			close(errors)
+
+			// Check if any errors occurred
+			for err := range errors {
+				t.Logf("Concurrent operation error: %v", err)
+				return false
+			}
+
+			// Verify final statistics consistency
+			total, oov, hit, fallbackAttempts, fallbackSuccesses, fallbackFailures := vm.GetLookupStats()
+
+			// Basic sanity checks
+			if total < 0 || oov < 0 || hit < 0 {
+				t.Logf("Negative statistics after concurrent operations: total=%d, oov=%d, hit=%d", total, oov, hit)
+				return false
+			}
+
+			if fallbackAttempts < 0 || fallbackSuccesses < 0 || fallbackFailures < 0 {
+				t.Logf("Negative fallback statistics: attempts=%d, successes=%d, failures=%d", fallbackAttempts, fallbackSuccesses, fallbackFailures)
+				return false
+			}
+
+			// Total lookups should equal hits + OOV
+			if total != oov+hit {
+				t.Logf("Inconsistent statistics: total=%d, oov=%d, hit=%d", total, oov, hit)
+				return false
+			}
+
+			// Fallback successes + failures should equal fallback attempts
+			if fallbackAttempts != fallbackSuccesses+fallbackFailures {
+				t.Logf("Inconsistent fallback statistics: attempts=%d, successes=%d, failures=%d", fallbackAttempts, fallbackSuccesses, fallbackFailures)
+				return false
+			}
+
+			// Verify vocabulary size hasn't changed (no concurrent writes)
+			expectedVocabSize := numCharsInVocab + 10
+			if vm.VocabularySize() != expectedVocabSize {
+				t.Logf("Vocabulary size changed during concurrent operations: expected=%d, got=%d", expectedVocabSize, vm.VocabularySize())
+				return false
+			}
+
+			return true
+		},
+		gen.IntRange(2, 20),  // numGoroutines: 2-20 concurrent goroutines
+		gen.IntRange(10, 50), // numOperations: 10-50 operations per goroutine
+		gen.IntRange(10, 30), // numCharsInVocab: 10-30 characters in vocabulary
+	))
+
+	properties.TestingRun(t, gopter.ConsoleReporter(false))
+}
+
+// ============================================================================
+// Character-Level Fallback Performance Benchmarks
+// ============================================================================
+
+// BenchmarkCharacterLevelFallback_SingleOperation benchmarks a single fallback operation
+func BenchmarkCharacterLevelFallback_SingleOperation(b *testing.B) {
+	vm := NewVectorModel(300).(*vectorModel)
+
+	// Add single character vectors for Chinese characters
+	chineseChars := []string{"没", "事", "问", "题", "好", "的", "是", "在", "有", "人"}
+	for _, char := range chineseChars {
+		vector := make([]float32, 300)
+		for i := range vector {
+			vector[i] = float32(i) * 0.01
+		}
+		vm.AddVector(char, vector)
+	}
+
+	// Test with OOV words that will trigger fallback
+	testWords := []string{"没事", "问题", "好的"}
+
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		word := testWords[i%len(testWords)]
+		vm.GetVector(word)
+	}
+}
+
+// BenchmarkCharacterLevelFallback_WithoutFallback benchmarks direct vector lookup (no fallback)
+func BenchmarkCharacterLevelFallback_WithoutFallback(b *testing.B) {
+	vm := NewVectorModel(300).(*vectorModel)
+
+	// Add complete words to vocabulary
+	testWords := []string{"没事", "问题", "好的"}
+	for _, word := range testWords {
+		vector := make([]float32, 300)
+		for i := range vector {
+			vector[i] = float32(i) * 0.01
+		}
+		vm.AddVector(word, vector)
+	}
+
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		word := testWords[i%len(testWords)]
+		vm.GetVector(word)
+	}
+}
+
+// BenchmarkCharacterLevelFallback_PerformanceOverhead measures the overhead of fallback
+func BenchmarkCharacterLevelFallback_PerformanceOverhead(b *testing.B) {
+	b.Run("with_fallback", func(b *testing.B) {
+		vm := NewVectorModel(300).(*vectorModel)
+
+		// Add single character vectors
+		chineseChars := []string{"没", "事", "问", "题", "好", "的", "是", "在", "有", "人"}
+		for _, char := range chineseChars {
+			vector := make([]float32, 300)
+			for i := range vector {
+				vector[i] = float32(i) * 0.01
+			}
+			vm.AddVector(char, vector)
+		}
+
+		testWords := []string{"没事", "问题", "好的"}
+
+		b.ResetTimer()
+		for i := 0; b.Loop(); i++ {
+			word := testWords[i%len(testWords)]
+			vm.GetVector(word)
+		}
+	})
+
+	b.Run("without_fallback", func(b *testing.B) {
+		vm := NewVectorModel(300).(*vectorModel)
+
+		// Add complete words to vocabulary
+		testWords := []string{"没事", "问题", "好的"}
+		for _, word := range testWords {
+			vector := make([]float32, 300)
+			for i := range vector {
+				vector[i] = float32(i) * 0.01
+			}
+			vm.AddVector(word, vector)
+		}
+
+		b.ResetTimer()
+		for i := 0; b.Loop(); i++ {
+			word := testWords[i%len(testWords)]
+			vm.GetVector(word)
+		}
+	})
+}
+
+// BenchmarkCharacterLevelFallback_DifferentWordLengths benchmarks fallback with different word lengths
+func BenchmarkCharacterLevelFallback_DifferentWordLengths(b *testing.B) {
+	// Add single character vectors
+	chineseChars := []string{"没", "事", "问", "题", "好", "的", "是", "在", "有", "人", "工", "智", "能", "学", "习", "技", "术"}
+
+	testCases := []struct {
+		name  string
+		words []string
+	}{
+		{"2_chars", []string{"没事", "问题", "好的"}},
+		{"3_chars", []string{"没问题", "好事情", "有意思"}},
+		{"4_chars", []string{"人工智能", "机器学习", "深度学习"}},
+		{"5_chars", []string{"没有问题的", "好的事情是", "有意思的人"}},
+	}
+
+	for _, tc := range testCases {
+		b.Run(tc.name, func(b *testing.B) {
+			vm := NewVectorModel(300).(*vectorModel)
+
+			for _, char := range chineseChars {
+				vector := make([]float32, 300)
+				for i := range vector {
+					vector[i] = float32(i) * 0.01
+				}
+				vm.AddVector(char, vector)
+			}
+
+			b.ResetTimer()
+			for i := 0; b.Loop(); i++ {
+				word := tc.words[i%len(tc.words)]
+				vm.GetVector(word)
+			}
+		})
+	}
+}
+
+// BenchmarkCharacterLevelFallback_BatchRequests benchmarks batch requests with fallback
+func BenchmarkCharacterLevelFallback_BatchRequests(b *testing.B) {
+	testCases := []struct {
+		name         string
+		batchSize    int
+		fallbackRate float64 // Percentage of words that need fallback
+	}{
+		{"batch_10_fallback_0%", 10, 0.0},
+		{"batch_10_fallback_50%", 10, 0.5},
+		{"batch_10_fallback_100%", 10, 1.0},
+		{"batch_50_fallback_0%", 50, 0.0},
+		{"batch_50_fallback_50%", 50, 0.5},
+		{"batch_50_fallback_100%", 50, 1.0},
+		{"batch_100_fallback_50%", 100, 0.5},
+	}
+
+	for _, tc := range testCases {
+		b.Run(tc.name, func(b *testing.B) {
+			vm := NewVectorModel(300).(*vectorModel)
+
+			// Add single character vectors
+			chineseChars := []string{"没", "事", "问", "题", "好", "的", "是", "在", "有", "人"}
+			for _, char := range chineseChars {
+				vector := make([]float32, 300)
+				for i := range vector {
+					vector[i] = float32(i) * 0.01
+				}
+				vm.AddVector(char, vector)
+			}
+
+			// Create batch of words
+			words := make([]string, tc.batchSize)
+			fallbackCount := int(float64(tc.batchSize) * tc.fallbackRate)
+
+			// Words that need fallback (OOV compound words)
+			for i := 0; i < fallbackCount; i++ {
+				words[i] = "没事" // OOV word that will trigger fallback
+			}
+
+			// Words that don't need fallback (add to vocabulary)
+			for i := fallbackCount; i < tc.batchSize; i++ {
+				word := fmt.Sprintf("word%d", i)
+				vector := make([]float32, 300)
+				for j := range vector {
+					vector[j] = float32(j) * 0.01
+				}
+				vm.AddVector(word, vector)
+				words[i] = word
+			}
+
+			b.ResetTimer()
+			for b.Loop() {
+				vm.GetAverageVector(words)
+			}
+		})
+	}
+}
+
+// BenchmarkCharacterLevelFallback_Throughput measures throughput with different fallback rates
+func BenchmarkCharacterLevelFallback_Throughput(b *testing.B) {
+	testCases := []struct {
+		name         string
+		fallbackRate float64
+	}{
+		{"throughput_0%_fallback", 0.0},
+		{"throughput_25%_fallback", 0.25},
+		{"throughput_50%_fallback", 0.5},
+		{"throughput_75%_fallback", 0.75},
+		{"throughput_100%_fallback", 1.0},
+	}
+
+	for _, tc := range testCases {
+		b.Run(tc.name, func(b *testing.B) {
+			vm := NewVectorModel(300).(*vectorModel)
+
+			// Add single character vectors
+			chineseChars := []string{"没", "事", "问", "题", "好", "的", "是", "在", "有", "人"}
+			for _, char := range chineseChars {
+				vector := make([]float32, 300)
+				for i := range vector {
+					vector[i] = float32(i) * 0.01
+				}
+				vm.AddVector(char, vector)
+			}
+
+			// Create test words
+			totalWords := 100
+			fallbackWords := int(float64(totalWords) * tc.fallbackRate)
+			testWords := make([]string, totalWords)
+
+			// OOV words that trigger fallback
+			for i := 0; i < fallbackWords; i++ {
+				testWords[i] = "没事"
+			}
+
+			// Known words
+			for i := fallbackWords; i < totalWords; i++ {
+				word := fmt.Sprintf("word%d", i)
+				vector := make([]float32, 300)
+				for j := range vector {
+					vector[j] = float32(j) * 0.01
+				}
+				vm.AddVector(word, vector)
+				testWords[i] = word
+			}
+
+			b.ResetTimer()
+			for i := 0; b.Loop(); i++ {
+				word := testWords[i%len(testWords)]
+				vm.GetVector(word)
+			}
+		})
+	}
+}
+
+// BenchmarkCharacterLevelFallback_MemoryAllocation measures memory allocation overhead
+func BenchmarkCharacterLevelFallback_MemoryAllocation(b *testing.B) {
+	vm := NewVectorModel(300).(*vectorModel)
+
+	// Add single character vectors
+	chineseChars := []string{"没", "事", "问", "题", "好", "的"}
+	for _, char := range chineseChars {
+		vector := make([]float32, 300)
+		for i := range vector {
+			vector[i] = float32(i) * 0.01
+		}
+		vm.AddVector(char, vector)
+	}
+
+	testWord := "没事"
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		vm.GetVector(testWord)
+	}
+}
+
+// BenchmarkCharacterLevelFallback_ConcurrentAccess benchmarks concurrent access with fallback
+func BenchmarkCharacterLevelFallback_ConcurrentAccess(b *testing.B) {
+	vm := NewVectorModel(300).(*vectorModel)
+
+	// Add single character vectors
+	chineseChars := []string{"没", "事", "问", "题", "好", "的", "是", "在", "有", "人"}
+	for _, char := range chineseChars {
+		vector := make([]float32, 300)
+		for i := range vector {
+			vector[i] = float32(i) * 0.01
+		}
+		vm.AddVector(char, vector)
+	}
+
+	testWords := []string{"没事", "问题", "好的"}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			word := testWords[i%len(testWords)]
+			vm.GetVector(word)
+			i++
+		}
+	})
+}
+
+// BenchmarkCharacterLevelFallback_PartialCharacterCoverage benchmarks fallback with partial character coverage
+func BenchmarkCharacterLevelFallback_PartialCharacterCoverage(b *testing.B) {
+	testCases := []struct {
+		name     string
+		coverage float64 // Percentage of characters in vocabulary
+	}{
+		{"coverage_25%", 0.25},
+		{"coverage_50%", 0.5},
+		{"coverage_75%", 0.75},
+		{"coverage_100%", 1.0},
+	}
+
+	for _, tc := range testCases {
+		b.Run(tc.name, func(b *testing.B) {
+			vm := NewVectorModel(300).(*vectorModel)
+
+			// All possible characters in test words
+			allChars := []string{"没", "事", "问", "题"}
+			coverageCount := int(float64(len(allChars)) * tc.coverage)
+
+			// Add only a subset of characters to vocabulary
+			for i := 0; i < coverageCount; i++ {
+				vector := make([]float32, 300)
+				for j := range vector {
+					vector[j] = float32(j) * 0.01
+				}
+				vm.AddVector(allChars[i], vector)
+			}
+
+			testWords := []string{"没事", "问题"}
+
+			b.ResetTimer()
+			for i := 0; b.Loop(); i++ {
+				word := testWords[i%len(testWords)]
+				vm.GetVector(word)
+			}
+		})
+	}
+}
+
+// BenchmarkCharacterLevelFallback_ExecutionTime measures execution time to validate < 10ms requirement
+func BenchmarkCharacterLevelFallback_ExecutionTime(b *testing.B) {
+	vm := NewVectorModel(300).(*vectorModel)
+
+	// Add single character vectors
+	chineseChars := []string{"没", "事", "问", "题", "好", "的", "是", "在", "有", "人"}
+	for _, char := range chineseChars {
+		vector := make([]float32, 300)
+		for i := range vector {
+			vector[i] = float32(i) * 0.01
+		}
+		vm.AddVector(char, vector)
+	}
+
+	// Test with different word lengths to ensure all complete within 10ms
+	testWords := []string{
+		"没事",       // 2 chars
+		"没问题",      // 3 chars
+		"人工智能",     // 4 chars
+		"没有问题的",    // 5 chars
+		"好的事情是在",   // 6 chars
+		"有意思的人工智能", // 8 chars
+	}
+
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		word := testWords[i%len(testWords)]
+		start := time.Now()
+		vm.GetVector(word)
+		elapsed := time.Since(start)
+
+		// Validate that execution time is < 10ms (requirement 6.1)
+		if elapsed > 10*time.Millisecond {
+			b.Errorf("Fallback operation took %v, exceeds 10ms requirement", elapsed)
+		}
+	}
+}
+
+// BenchmarkCharacterLevelFallback_RealWorldScenario benchmarks a realistic usage scenario
+func BenchmarkCharacterLevelFallback_RealWorldScenario(b *testing.B) {
+	logger := &DiscardLogger{}
+	loader := NewEmbeddingLoader(logger)
+
+	// Load real vector file
+	model, err := loader.LoadFromFile("vector/wiki.zh.align.vec")
+	if err != nil {
+		b.Skipf("Skipping real-world benchmark: %v", err)
+		return
+	}
+
+	// Real Chinese OOV words that might trigger fallback
+	testWords := []string{
+		"没事",  // Common colloquial phrase
+		"问题",  // Common word
+		"好的",  // Common response
+		"谢谢",  // Thank you
+		"不客气", // You're welcome
+		"再见",  // Goodbye
+		"明天见", // See you tomorrow
+		"没问题", // No problem
+		"好主意", // Good idea
+		"很高兴", // Very happy
+	}
+
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		word := testWords[i%len(testWords)]
+		model.GetVector(word)
+	}
+}
+
+// BenchmarkCharacterLevelFallback_CompareWithBaseline compares fallback performance with baseline
+func BenchmarkCharacterLevelFallback_CompareWithBaseline(b *testing.B) {
+	// Baseline: Direct lookup (no fallback needed)
+	b.Run("baseline_direct_lookup", func(b *testing.B) {
+		vm := NewVectorModel(300).(*vectorModel)
+
+		testWords := []string{"word1", "word2", "word3"}
+		for _, word := range testWords {
+			vector := make([]float32, 300)
+			for i := range vector {
+				vector[i] = float32(i) * 0.01
+			}
+			vm.AddVector(word, vector)
+		}
+
+		b.ResetTimer()
+		for i := 0; b.Loop(); i++ {
+			word := testWords[i%len(testWords)]
+			vm.GetVector(word)
+		}
+	})
+
+	// With fallback: OOV words requiring character-level fallback
+	b.Run("with_fallback", func(b *testing.B) {
+		vm := NewVectorModel(300).(*vectorModel)
+
+		chineseChars := []string{"没", "事", "问", "题", "好", "的"}
+		for _, char := range chineseChars {
+			vector := make([]float32, 300)
+			for i := range vector {
+				vector[i] = float32(i) * 0.01
+			}
+			vm.AddVector(char, vector)
+		}
+
+		testWords := []string{"没事", "问题", "好的"}
+
+		b.ResetTimer()
+		for i := 0; b.Loop(); i++ {
+			word := testWords[i%len(testWords)]
+			vm.GetVector(word)
+		}
 	})
 }

@@ -374,10 +374,30 @@ func (sm *semanticMatcher) FindTopKeywords(
 		overallOOVRate = float64(totalOOV) / float64(totalTokens)
 	}
 
+	// Get fallback statistics
+	_, _, _, fallbackAttempts, fallbackSuccesses, fallbackFailures := sm.model.GetLookupStats()
+	fallbackSuccessRate := 0.0
+	if fallbackAttempts > 0 {
+		fallbackSuccessRate = float64(fallbackSuccesses) / float64(fallbackAttempts)
+	}
+
+	// Log detailed fallback information at Debug level
+	if fallbackAttempts > 0 {
+		sm.logger.Debugf(
+			"Character-level fallback used in FindTopKeywords, fallback_attempts: %d, "+
+				"fallback_successes: %d, fallback_failures: %d, fallback_success_rate: %.4f",
+			fallbackAttempts,
+			fallbackSuccesses,
+			fallbackFailures,
+			fallbackSuccessRate,
+		)
+	}
+
 	sm.logger.Infof(
 		"FindTopKeywords completed, total_duration_ms: %d, preprocess_duration_ms: %d, "+
 			"vectorize_duration_ms: %d, similarity_duration_ms: %d, keywords_processed: %d, "+
-			"results_returned: %d, total_tokens: %d, total_oov: %d, oov_rate: %.4f",
+			"results_returned: %d, total_tokens: %d, total_oov: %d, oov_rate: %.4f, "+
+			"fallback_attempts: %d, fallback_success_rate: %.4f",
 		totalDuration.Milliseconds(),
 		preprocessDuration.Milliseconds(),
 		vectorizeDuration.Milliseconds(),
@@ -387,6 +407,8 @@ func (sm *semanticMatcher) FindTopKeywords(
 		totalTokens,
 		totalOOV,
 		overallOOVRate,
+		fallbackAttempts,
+		fallbackSuccessRate,
 	)
 
 	// Warn if overall OOV rate is high
@@ -476,10 +498,31 @@ func (sm *semanticMatcher) ComputeSimilarity(text1, text2 string) float64 {
 	sm.updateStats(totalDuration, totalTokens, totalOOV)
 
 	oovRate := float64(totalOOV) / float64(totalTokens)
+
+	// Get fallback statistics
+	_, _, _, fallbackAttempts, fallbackSuccesses, fallbackFailures := sm.model.GetLookupStats()
+	fallbackSuccessRate := 0.0
+	if fallbackAttempts > 0 {
+		fallbackSuccessRate = float64(fallbackSuccesses) / float64(fallbackAttempts)
+	}
+
+	// Log detailed fallback information at Debug level
+	if fallbackAttempts > 0 {
+		sm.logger.Debugf(
+			"Character-level fallback used in ComputeSimilarity, fallback_attempts: %d, "+
+				"fallback_successes: %d, fallback_failures: %d, fallback_success_rate: %.4f",
+			fallbackAttempts,
+			fallbackSuccesses,
+			fallbackFailures,
+			fallbackSuccessRate,
+		)
+	}
+
 	sm.logger.Infof(
 		"ComputeSimilarity completed, total_duration_ms: %d, preprocess_duration_ms: %d, "+
 			"vectorize_duration_ms: %d, similarity_duration_ms: %d, tokens1_count: %d, tokens2_count: %d, "+
-			"oov1_count: %d, oov2_count: %d, oov_rate: %.4f, similarity_score: %.4f",
+			"oov1_count: %d, oov2_count: %d, oov_rate: %.4f, similarity_score: %.4f, "+
+			"fallback_attempts: %d, fallback_success_rate: %.4f",
 		totalDuration.Milliseconds(),
 		preprocessDuration.Milliseconds(),
 		vectorizeDuration.Milliseconds(),
@@ -490,6 +533,8 @@ func (sm *semanticMatcher) ComputeSimilarity(text1, text2 string) float64 {
 		oov2,
 		oovRate,
 		similarity,
+		fallbackAttempts,
+		fallbackSuccessRate,
 	)
 
 	// Warn if OOV rate is high

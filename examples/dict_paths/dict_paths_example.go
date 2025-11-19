@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/kydenul/log"
+
 	sm "github.com/kydenul/semantic-matcher"
 )
 
@@ -154,13 +155,34 @@ func yamlConfigExample(pathPrefix string, logger log.Logger) {
 	}
 
 	// Test with sample text
-	paragraph := "深度学习技术在计算机视觉领域取得了突破性进展"
+	paragraph := "没事"
 	keywords := []string{
 		"人工智能",
 		"机器学习",
 		"深度学习",
 		"计算机视觉",
 		"自然语言处理",
+
+		"blue biu",
+		"查询-6917",
+		"修复-6917",
+		"没事哒",
+		"限量告警忽略配置",
+		"网关添加测试号",
+		"查询alarmmask",
+		"sql-analyzer-block",
+		"lol消费统计查询",
+		"强制重置二级密码",
+		"校验二级密码",
+		"测试环境强制重置二级密码",
+		"测试环境校验二级密码",
+		"MIP",
+		"校验测试号",
+		"pbsql",
+		"cbsql",
+		"业务查询",
+		"活动峰值",
+		"省钱卡开通查询",
 	}
 
 	logger.Infof("Test paragraph: %s", paragraph)

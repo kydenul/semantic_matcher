@@ -17,6 +17,11 @@ type vectorModel struct {
 	totalLookups int64 // Total number of vector lookups
 	oovLookups   int64 // Number of OOV (out-of-vocabulary) lookups
 	hitLookups   int64 // Number of successful lookups
+
+	// Fallback statistics
+	fallbackAttempts  int64 // Number of character-level fallback attempts
+	fallbackSuccesses int64 // Number of successful fallback operations
+	fallbackFailures  int64 // Number of failed fallback operations
 }
 
 // NewVectorModel creates a new VectorModel instance
@@ -31,28 +36,43 @@ func NewVectorModel(dimension int) VectorModel {
 
 // GetVector retrieves vector for a single word
 // Returns the vector and a boolean indicating if the word was found
+// If the word is not found (OOV), attempts character-level fallback
 func (vm *vectorModel) GetVector(word string) ([]float32, bool) {
 	vm.mtx.Lock()
 	defer vm.mtx.Unlock()
 
 	vm.totalLookups++
 
+	// First, try direct lookup from vocabulary
 	vector, exists := vm.vectors[word]
-	if !exists {
-		vm.oovLookups++
-		return nil, false
+	if exists {
+		vm.hitLookups++
+		// Return a copy to prevent external modification
+		result := make([]float32, len(vector))
+		copy(result, vector)
+		return result, true
 	}
 
-	vm.hitLookups++
+	// Word not found - mark as OOV
+	vm.oovLookups++
 
-	// Return a copy to prevent external modification
-	result := make([]float32, len(vector))
-	copy(result, vector)
-	return result, true
+	// Attempt character-level fallback for OOV words
+	vm.fallbackAttempts++
+	fallbackVector, success := vm.characterLevelFallback(word)
+	if success {
+		// Return a copy to prevent external modification
+		result := make([]float32, len(fallbackVector))
+		copy(result, fallbackVector)
+		return result, true
+	}
+
+	// Fallback failed
+	return nil, false
 }
 
 // GetAverageVector computes mean pooling for multiple words
 // Returns the averaged vector and a boolean indicating if any words were found
+// For OOV words, automatically attempts character-level fallback
 func (vm *vectorModel) GetAverageVector(words []string) ([]float32, bool) {
 	if len(words) == 0 {
 		return nil, false
@@ -63,10 +83,11 @@ func (vm *vectorModel) GetAverageVector(words []string) ([]float32, bool) {
 
 	var sum []float32
 	validWords := 0
-	oovCount := 0
 
 	for _, word := range words {
 		vm.totalLookups++
+
+		// First, try direct lookup from vocabulary
 		if vector, exists := vm.vectors[word]; exists {
 			vm.hitLookups++
 			if sum == nil {
@@ -80,12 +101,29 @@ func (vm *vectorModel) GetAverageVector(words []string) ([]float32, bool) {
 			}
 			validWords++
 		} else {
+			// Word not found - mark as OOV
 			vm.oovLookups++
-			oovCount++
+
+			// Attempt character-level fallback for OOV words
+			vm.fallbackAttempts++
+			fallbackVector, success := vm.characterLevelFallback(word)
+			if success {
+				if sum == nil {
+					// Initialize sum vector with the dimension
+					sum = make([]float32, vm.dimension)
+				}
+
+				// Add fallback vector components to sum
+				for i, val := range fallbackVector {
+					sum[i] += val
+				}
+				validWords++
+			}
+			// If fallback fails, the word is simply skipped (no vector to add)
 		}
 	}
 
-	// Return false if no valid words were found (all OOV)
+	// Return false if no valid words were found (all OOV and all fallbacks failed)
 	if validWords == 0 {
 		return nil, false
 	}
@@ -255,11 +293,24 @@ func (vm *vectorModel) GetVectorHitRate() float64 {
 }
 
 // GetLookupStats returns detailed lookup statistics
-func (vm *vectorModel) GetLookupStats() (totalLookups, oovLookups, hitLookups int64) {
+func (vm *vectorModel) GetLookupStats() (totalLookups, oovLookups, hitLookups, fallbackAttempts, fallbackSuccesses, fallbackFailures int64) {
 	vm.mtx.RLock()
 	defer vm.mtx.RUnlock()
 
-	return vm.totalLookups, vm.oovLookups, vm.hitLookups
+	return vm.totalLookups, vm.oovLookups, vm.hitLookups, vm.fallbackAttempts, vm.fallbackSuccesses, vm.fallbackFailures
+}
+
+// GetFallbackSuccessRate returns the success rate of character-level fallback operations
+// Returns a value between 0.0 and 1.0, or 0.0 if no fallback attempts have been made
+func (vm *vectorModel) GetFallbackSuccessRate() float64 {
+	vm.mtx.RLock()
+	defer vm.mtx.RUnlock()
+
+	if vm.fallbackAttempts == 0 {
+		return 0.0
+	}
+
+	return float64(vm.fallbackSuccesses) / float64(vm.fallbackAttempts)
 }
 
 // ResetStats resets all statistics counters
@@ -270,4 +321,55 @@ func (vm *vectorModel) ResetStats() {
 	vm.totalLookups = 0
 	vm.oovLookups = 0
 	vm.hitLookups = 0
+	vm.fallbackAttempts = 0
+	vm.fallbackSuccesses = 0
+	vm.fallbackFailures = 0
+}
+
+// characterLevelFallback attempts to generate a vector for an OOV word by splitting it into characters
+// and averaging the vectors of characters that exist in the vocabulary.
+// This method is called with the lock already held.
+func (vm *vectorModel) characterLevelFallback(word string) ([]float32, bool) {
+	// Convert string to runes for proper Unicode character handling
+	runes := []rune(word)
+
+	// Single character words should not trigger fallback (already failed in main lookup)
+	if len(runes) <= 1 {
+		vm.fallbackFailures++
+		return nil, false
+	}
+
+	// Collect character vectors
+	var sum []float32
+	validChars := 0
+
+	for _, r := range runes {
+		char := string(r)
+		if charVec, exists := vm.vectors[char]; exists {
+			if sum == nil {
+				// Initialize sum vector with the correct dimension
+				sum = make([]float32, vm.dimension)
+			}
+			// Add character vector to sum
+			for i, val := range charVec {
+				sum[i] += val
+			}
+			validChars++
+		}
+	}
+
+	// If no characters have vectors, fallback fails
+	if validChars == 0 {
+		vm.fallbackFailures++
+		return nil, false
+	}
+
+	// Compute average by dividing sum by number of valid characters
+	result := make([]float32, vm.dimension)
+	for i := range sum {
+		result[i] = sum[i] / float32(validChars)
+	}
+
+	vm.fallbackSuccesses++
+	return result, true
 }
